@@ -65,6 +65,9 @@ enum {
 #define FLAG_OBJWIN         0x01000000
 #define FLAG_ORDER_MASK     0xF8000000
 
+/* Renderer id, as returned by GBAVideoSoftwareRendererId. */
+#define SOFTWARE_MAGIC 0x6E727773
+
 #define IS_WRITABLE(PIXEL) ((PIXEL) & 0xFE000000)
 
 struct WindowControl {
@@ -78,6 +81,10 @@ struct Window {
 	uint8_t endX;
 	struct WindowControl control;
 };
+
+/* Atomic per-layer capture (Phase 2.1). See atomic-layers.h for the
+   buffer layout, flag-byte format and per-scanline metadata. */
+#include <mgba/internal/gba/renderers/atomic-layers.h>
 
 struct GBAVideoSoftwareRenderer {
 	struct GBAVideoRenderer d;
@@ -151,6 +158,28 @@ struct GBAVideoSoftwareRenderer {
 	int end;
 
 	uint8_t lastHighlightAmount;
+
+	/* Atomic per-layer capture (Phase 2.1). Layer 0-3 = BG0-3,
+	   layer 4 = OBJ. Colours are pre-blend RGB565; flags are one byte
+	   per pixel (ATOMIC_FLAG_*). Allocated in Init, freed in Deinit;
+	   NULL until then. Capture is off by default (atomicLayersEnabled)
+	   and costs nothing while off. */
+	mColor* atomicLayers[ATOMIC_LAYER_COUNT];
+	uint8_t* atomicLayerFlags[ATOMIC_LAYER_COUNT];
+	struct AtomicScanlineMeta* atomicMeta;
+	int atomicScanline;
+	bool atomicLayersEnabled;
+	/* In-progress OBJ row, mirroring spriteLayer: the pre-blend colour
+	   and flag byte of the winning sprite pixel per x. Copied into
+	   layer 4 at the end of each drawn scanline. */
+	mColor atomicObjRawColor[GBA_VIDEO_HORIZONTAL_PIXELS];
+	uint8_t atomicObjRawFlags[GBA_VIDEO_HORIZONTAL_PIXELS];
+	/* In-progress OBJWIN mask (30 bytes, bit x of byte x>>3), taken
+	   from row[] BEFORE PostprocessBuffer: passes (a)/(b) replace
+	   row entries with bare colours and drop the FLAG_OBJWIN bits,
+	   so reading the mask after post-processing would lose pixels
+	   the blend/fade passes touched. */
+	uint8_t atomicObjwinMask[30];
 };
 
 void GBAVideoSoftwareRendererCreate(struct GBAVideoSoftwareRenderer* renderer);

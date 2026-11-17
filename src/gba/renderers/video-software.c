@@ -14,7 +14,6 @@
 
 #define DIRTY_SCANLINE(R, Y) R->scanlineDirty[Y >> 5] |= (1U << (Y & 0x1F))
 #define CLEAN_SCANLINE(R, Y) R->scanlineDirty[Y >> 5] &= ~(1U << (Y & 0x1F))
-#define SOFTWARE_MAGIC 0x6E727773
 
 static void GBAVideoSoftwareRendererInit(struct GBAVideoRenderer* renderer);
 static void GBAVideoSoftwareRendererDeinit(struct GBAVideoRenderer* renderer);
@@ -46,6 +45,11 @@ static int GBAVideoSoftwareRendererPreprocessSpriteLayer(struct GBAVideoSoftware
 
 static void _updatePalettes(struct GBAVideoSoftwareRenderer* renderer);
 static void _updateFlags(struct GBAVideoSoftwareRenderer* renderer, struct GBAVideoSoftwareBackground* bg);
+
+static void GBAVideoSoftwareRendererAtomicAlloc(struct GBAVideoSoftwareRenderer* renderer);
+static void GBAVideoSoftwareRendererAtomicFree(struct GBAVideoSoftwareRenderer* renderer);
+static void GBAVideoSoftwareRendererAtomicClearScanline(struct GBAVideoSoftwareRenderer* renderer, int y);
+static void GBAVideoSoftwareRendererAtomicSnapshotScanline(struct GBAVideoSoftwareRenderer* renderer, int y);
 
 static void _breakWindow(struct GBAVideoSoftwareRenderer* softwareRenderer, struct WindowN* win);
 static void _breakWindowInner(struct GBAVideoSoftwareRenderer* softwareRenderer, struct WindowN* win);
@@ -94,6 +98,8 @@ static void GBAVideoSoftwareRendererInit(struct GBAVideoRenderer* renderer) {
 	GBAVideoSoftwareRendererReset(renderer);
 
 	struct GBAVideoSoftwareRenderer* softwareRenderer = (struct GBAVideoSoftwareRenderer*) renderer;
+
+	GBAVideoSoftwareRendererAtomicAlloc(softwareRenderer);
 
 	int y;
 	for (y = 0; y < GBA_VIDEO_VERTICAL_PIXELS; ++y) {
@@ -160,7 +166,7 @@ static void GBAVideoSoftwareRendererReset(struct GBAVideoRenderer* renderer) {
 
 static void GBAVideoSoftwareRendererDeinit(struct GBAVideoRenderer* renderer) {
 	struct GBAVideoSoftwareRenderer* softwareRenderer = (struct GBAVideoSoftwareRenderer*) renderer;
-	UNUSED(softwareRenderer);
+	GBAVideoSoftwareRendererAtomicFree(softwareRenderer);
 }
 
 static uint32_t GBAVideoSoftwareRendererId(const struct GBAVideoRenderer* renderer) {
@@ -610,11 +616,29 @@ static void GBAVideoSoftwareRendererDrawScanline(struct GBAVideoRenderer* render
 
 	CLEAN_SCANLINE(softwareRenderer, y);
 
+	/* Atomic layer capture (Phase 2.1): this scanline's layer rows
+	   start empty; the composite funnel fills them as it draws, and
+	   the snapshot at the end of the scanline copies the OBJ row and
+	   records the per-scanline metadata. A scanline that is not dirty
+	   keeps the previous frame's layer rows and metadata, exactly
+	   like the composited outputBuffer row. */
+	softwareRenderer->atomicScanline = y;
+	if (softwareRenderer->atomicLayersEnabled) {
+		GBAVideoSoftwareRendererAtomicClearScanline(softwareRenderer, y);
+	}
+
 	mColor* row = &softwareRenderer->outputBuffer[softwareRenderer->outputBufferStride * y];
 	if (GBARegisterDISPCNTIsForcedBlank(softwareRenderer->dispcnt)) {
 		int x;
 		for (x = 0; x < GBA_VIDEO_HORIZONTAL_PIXELS; ++x) {
 			row[x] = M_COLOR_WHITE;
+		}
+		if (softwareRenderer->atomicLayersEnabled) {
+			/* No draw happened: the OBJWIN mask is empty for this
+			   scanline (the scratch array still holds the previous
+			   scanline's). */
+			memset(softwareRenderer->atomicObjwinMask, 0, sizeof(softwareRenderer->atomicObjwinMask));
+			GBAVideoSoftwareRendererAtomicSnapshotScanline(softwareRenderer, y);
 		}
 		return;
 	}
@@ -674,7 +698,27 @@ static void GBAVideoSoftwareRendererDrawScanline(struct GBAVideoRenderer* render
 		}
 	}
 
+	/* Atomic layer capture: take the OBJWIN mask from row[] now,
+	   before PostprocessBuffer drops the FLAG_OBJWIN bits (see the
+	   atomicObjwinMask field comment). */
+	if (softwareRenderer->atomicLayersEnabled) {
+		int mx;
+		memset(softwareRenderer->atomicObjwinMask, 0, sizeof(softwareRenderer->atomicObjwinMask));
+		for (mx = 0; mx < GBA_VIDEO_HORIZONTAL_PIXELS; ++mx) {
+			if (softwareRenderer->row[mx] & FLAG_OBJWIN) {
+				softwareRenderer->atomicObjwinMask[mx >> 3] |= (uint8_t) (1u << (mx & 7));
+			}
+		}
+	}
+
 	GBAVideoSoftwareRendererPostprocessBuffer(softwareRenderer);
+
+	/* Atomic layer capture: copy the completed OBJ row and snapshot
+	   this scanline's metadata now, before the affine origins advance
+	   for the next scanline. */
+	if (softwareRenderer->atomicLayersEnabled) {
+		GBAVideoSoftwareRendererAtomicSnapshotScanline(softwareRenderer, y);
+	}
 
 	if (GBARegisterDISPCNTGetMode(softwareRenderer->dispcnt) != 0) {
 		if (softwareRenderer->bg[2].enabled == ENABLED_MAX) {
@@ -1114,4 +1158,131 @@ void _updateFlags(struct GBAVideoSoftwareRenderer* renderer, struct GBAVideoSoft
 	background->flags = flags;
 	background->objwinFlags = objwinFlags;
 	background->variant = background->target1 && GBAWindowControlIsBlendEnable(renderer->currentWindow.packed) && (renderer->blendEffect == BLEND_BRIGHTEN || renderer->blendEffect == BLEND_DARKEN);
+}
+
+/* Atomic per-layer capture (Phase 2.1). */
+
+static void GBAVideoSoftwareRendererAtomicAlloc(struct GBAVideoSoftwareRenderer* renderer) {
+	int i;
+	for (i = 0; i < ATOMIC_LAYER_COUNT; ++i) {
+		if (!renderer->atomicLayers[i]) {
+			renderer->atomicLayers[i] = malloc(ATOMIC_LAYER_PIXELS * sizeof(mColor));
+		}
+		if (!renderer->atomicLayerFlags[i]) {
+			renderer->atomicLayerFlags[i] = malloc(ATOMIC_LAYER_PIXELS * sizeof(uint8_t));
+		}
+	}
+	if (!renderer->atomicMeta) {
+		renderer->atomicMeta = malloc(GBA_VIDEO_VERTICAL_PIXELS * sizeof(struct AtomicScanlineMeta));
+	}
+	/* Start empty: no layer covers any pixel, no metadata. A partial
+	   allocation (any plane NULL) simply captures nothing for that
+	   plane; the accessors report it. */
+	for (i = 0; i < ATOMIC_LAYER_COUNT; ++i) {
+		if (renderer->atomicLayers[i]) {
+			memset(renderer->atomicLayers[i], 0, ATOMIC_LAYER_PIXELS * sizeof(mColor));
+		}
+		if (renderer->atomicLayerFlags[i]) {
+			memset(renderer->atomicLayerFlags[i], 0, ATOMIC_LAYER_PIXELS * sizeof(uint8_t));
+		}
+	}
+	if (renderer->atomicMeta) {
+		memset(renderer->atomicMeta, 0, GBA_VIDEO_VERTICAL_PIXELS * sizeof(struct AtomicScanlineMeta));
+	}
+}
+
+static void GBAVideoSoftwareRendererAtomicFree(struct GBAVideoSoftwareRenderer* renderer) {
+	int i;
+	for (i = 0; i < ATOMIC_LAYER_COUNT; ++i) {
+		free(renderer->atomicLayers[i]);
+		renderer->atomicLayers[i] = NULL;
+		free(renderer->atomicLayerFlags[i]);
+		renderer->atomicLayerFlags[i] = NULL;
+	}
+	free(renderer->atomicMeta);
+	renderer->atomicMeta = NULL;
+}
+
+static void GBAVideoSoftwareRendererAtomicClearScanline(struct GBAVideoSoftwareRenderer* renderer, int y) {
+	int i;
+	size_t off = (size_t) y * GBA_VIDEO_HORIZONTAL_PIXELS;
+	for (i = 0; i < ATOMIC_LAYER_COUNT; ++i) {
+		if (renderer->atomicLayers[i]) {
+			memset(&renderer->atomicLayers[i][off], 0, GBA_VIDEO_HORIZONTAL_PIXELS * sizeof(mColor));
+		}
+		if (renderer->atomicLayerFlags[i]) {
+			memset(&renderer->atomicLayerFlags[i][off], 0, GBA_VIDEO_HORIZONTAL_PIXELS * sizeof(uint8_t));
+		}
+	}
+	memset(renderer->atomicObjRawColor, 0, sizeof(renderer->atomicObjRawColor));
+	memset(renderer->atomicObjRawFlags, 0, sizeof(renderer->atomicObjRawFlags));
+}
+
+static void GBAVideoSoftwareRendererAtomicSnapshotScanline(struct GBAVideoSoftwareRenderer* renderer, int y) {
+	struct AtomicScanlineMeta* meta;
+	int i;
+	if (!renderer->atomicLayersEnabled || !renderer->atomicMeta) {
+		return;
+	}
+	/* OBJ row: the in-progress row mirrors spriteLayer and is complete
+	   once the scanline is drawn. (On a forced-blank scanline it was
+	   just cleared, so the OBJ layer stays empty.) */
+	if (renderer->atomicLayers[ATOMIC_LAYER_COUNT - 1] && renderer->atomicLayerFlags[ATOMIC_LAYER_COUNT - 1]) {
+		memcpy(&renderer->atomicLayers[ATOMIC_LAYER_COUNT - 1][(size_t) y * GBA_VIDEO_HORIZONTAL_PIXELS],
+		       renderer->atomicObjRawColor, GBA_VIDEO_HORIZONTAL_PIXELS * sizeof(mColor));
+		memcpy(&renderer->atomicLayerFlags[ATOMIC_LAYER_COUNT - 1][(size_t) y * GBA_VIDEO_HORIZONTAL_PIXELS],
+		       renderer->atomicObjRawFlags, GBA_VIDEO_HORIZONTAL_PIXELS * sizeof(uint8_t));
+	}
+	meta = &renderer->atomicMeta[y];
+	memset(meta, 0, sizeof(*meta));
+	/* Raw registers for this scanline: cache[y].io was synced from
+	   nextIo at the top of DrawScanline, before anything drew. */
+	meta->dispcnt = renderer->cache[y].io[GBA_REG_DISPCNT >> 1];
+	meta->bldcnt = renderer->cache[y].io[GBA_REG_BLDCNT >> 1];
+	meta->bldalpha = renderer->cache[y].io[GBA_REG_BLDALPHA >> 1];
+	meta->bldy = renderer->cache[y].io[GBA_REG_BLDY >> 1];
+	/* Backdrop is palette[0], never the faded variant: the frontend
+	   re-applies the fade from blendEffect/bldy when the backdrop wins. */
+	meta->backdrop = renderer->normalPalette[0];
+	meta->mosaic = renderer->cache[y].io[GBA_REG_MOSAIC >> 1];
+	meta->blendEffect = (uint8_t) renderer->blendEffect;
+	meta->forceTarget1 = renderer->forceTarget1 ? 1 : 0;
+	meta->forcedBlank = GBARegisterDISPCNTIsForcedBlank(renderer->dispcnt) ? 1 : 0;
+	meta->stereo = renderer->stereo ? 1 : 0;
+	meta->nWindows = (uint8_t) renderer->nWindows;
+	for (i = 0; i < 4; ++i) {
+		meta->bgPriority[i] = (uint8_t) renderer->bg[i].priority;
+		meta->bgEnabled[i] = renderer->bg[i].enabled == ENABLED_MAX ? 1 : 0;
+		meta->bgHofs[i] = renderer->bg[i].x;
+		meta->bgVofs[i] = renderer->bg[i].y;
+	}
+	meta->bgRefX[0] = renderer->bg[2].refx;
+	meta->bgRefX[1] = renderer->bg[3].refx;
+	meta->bgRefY[0] = renderer->bg[2].refy;
+	meta->bgRefY[1] = renderer->bg[3].refy;
+	meta->bgPa[0] = renderer->bg[2].dx;
+	meta->bgPa[1] = renderer->bg[3].dx;
+	meta->bgPb[0] = renderer->bg[2].dmx;
+	meta->bgPb[1] = renderer->bg[3].dmx;
+	meta->bgPc[0] = renderer->bg[2].dy;
+	meta->bgPc[1] = renderer->bg[3].dy;
+	meta->bgPd[0] = renderer->bg[2].dmy;
+	meta->bgPd[1] = renderer->bg[3].dmy;
+	/* Affine origins for THIS scanline: the snapshot runs before the
+	   per-scanline advance at the end of DrawScanline. */
+	meta->bgSx[0] = renderer->bg[2].sx;
+	meta->bgSx[1] = renderer->bg[3].sx;
+	meta->bgSy[0] = renderer->bg[2].sy;
+	meta->bgSy[1] = renderer->bg[3].sy;
+	for (i = 0; i < renderer->nWindows && i < ATOMIC_MAX_WINDOWS; ++i) {
+		meta->winEndX[i] = renderer->windows[i].endX;
+		meta->winControl[i] = renderer->windows[i].control.packed;
+	}
+	meta->winoutControl = renderer->winout.packed;
+	meta->objwinControl = renderer->objwin.packed;
+	/* OBJWIN mask: taken from row[] before PostprocessBuffer (see the
+	   atomicObjwinMask field); the composite helpers preserve the bit
+	   and the outputBuffer copy drops it, and the post-process passes
+	   would have dropped it too. */
+	memcpy(meta->objwinMask, renderer->atomicObjwinMask, sizeof(meta->objwinMask));
 }

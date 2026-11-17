@@ -80,8 +80,10 @@
 	if ((current & FLAG_ORDER_MASK) > flags) { \
 		if (tileData) { \
 			renderer->spriteLayer[outX] = palette[tileData] | flags; \
+			_atomicObjStore(renderer, outX, atomicPalette[tileData], flags, atomicSemi); \
 		} else if (current != FLAG_UNWRITTEN) { \
 			renderer->spriteLayer[outX] = (current & ~(FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)) | (flags & (FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)); \
+			_atomicObjUpdateFlags(renderer, outX, flags); \
 		} \
 	}
 
@@ -93,8 +95,10 @@
 		if (tileData) { \
 			unsigned color = (renderer->row[outX] & FLAG_OBJWIN) ? objwinPalette[tileData] : palette[tileData]; \
 			renderer->spriteLayer[outX] = color | flags; \
+			_atomicObjStore(renderer, outX, atomicPalette[tileData], flags, atomicSemi); \
 		} else if (current != FLAG_UNWRITTEN) { \
 			renderer->spriteLayer[outX] = (current & ~(FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)) | (flags & (FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)); \
+			_atomicObjUpdateFlags(renderer, outX, flags); \
 		} \
 	}
 
@@ -107,6 +111,7 @@
 		current = renderer->spriteLayer[outX]; \
 		if (current != FLAG_UNWRITTEN && (current & FLAG_ORDER_MASK) > flags) { \
 			renderer->spriteLayer[outX] = (current & ~(FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)) | (flags & (FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)); \
+			_atomicObjUpdateFlags(renderer, outX, flags); \
 		} \
 	}
 
@@ -120,8 +125,10 @@
 	if ((current & FLAG_ORDER_MASK) > flags) { \
 		if (tileData) { \
 			renderer->spriteLayer[outX] = palette[tileData] | flags; \
+			_atomicObjStore(renderer, outX, atomicPalette[tileData], flags, atomicSemi); \
 		} else if (current != FLAG_UNWRITTEN) { \
 			renderer->spriteLayer[outX] = (current & ~(FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)) | (flags & (FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)); \
+			_atomicObjUpdateFlags(renderer, outX, flags); \
 		} \
 	}
 
@@ -133,8 +140,10 @@
 		if (tileData) { \
 			unsigned color = (renderer->row[outX] & FLAG_OBJWIN) ? objwinPalette[tileData] : palette[tileData]; \
 			renderer->spriteLayer[outX] = color | flags; \
+			_atomicObjStore(renderer, outX, atomicPalette[tileData], flags, atomicSemi); \
 		} else if (current != FLAG_UNWRITTEN) { \
 			renderer->spriteLayer[outX] = (current & ~(FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)) | (flags & (FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)); \
+			_atomicObjUpdateFlags(renderer, outX, flags); \
 		} \
 	}
 
@@ -147,6 +156,7 @@
 		current = renderer->spriteLayer[outX]; \
 		if (current != FLAG_UNWRITTEN && (current & FLAG_ORDER_MASK) > flags) { \
 			renderer->spriteLayer[outX] = (current & ~(FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)) | (flags & (FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)); \
+			_atomicObjUpdateFlags(renderer, outX, flags); \
 		} \
 	}
 
@@ -207,6 +217,13 @@ int GBAVideoSoftwareRendererPreprocessSprite(struct GBAVideoSoftwareRenderer* re
 			objwinPalette = palette;
 		}
 	}
+
+	/* Atomic capture: the same palette index into the UNFADED palette,
+	   tracking the per-sprite palette offset at the two sites below.
+	   `palette` above may point at the faded variant palette;
+	   atomicPalette never does. */
+	mColor* atomicPalette = &renderer->normalPalette[0x100];
+	bool atomicSemi = GBAObjAttributesAGetMode(sprite->a) == OBJ_MODE_SEMITRANSPARENT;
 
 	int inY = y - ((int) GBAObjAttributesAGetY(sprite->a) + renderer->objOffsetY);
 	int stride = GBARegisterDISPCNTIsObjCharacterMapping(renderer->dispcnt) ? (width >> !GBAObjAttributesAIs256Color(sprite->a)) : 0x80;
@@ -284,6 +301,7 @@ int GBAVideoSoftwareRendererPreprocessSprite(struct GBAVideoSoftwareRenderer* re
 
 		if (!GBAObjAttributesAIs256Color(sprite->a)) {
 			palette = &palette[GBAObjAttributesCGetPalette(sprite->c) << 4];
+			atomicPalette = &atomicPalette[GBAObjAttributesCGetPalette(sprite->c) << 4];
 			if (flags & FLAG_OBJWIN) {
 				SPRITE_TRANSFORMED_LOOP(16, OBJWIN);
 			} else if (mosaicH > 1) {
@@ -341,6 +359,7 @@ int GBAVideoSoftwareRendererPreprocessSprite(struct GBAVideoSoftwareRenderer* re
 		}
 		if (!GBAObjAttributesAIs256Color(sprite->a)) {
 			palette = &palette[GBAObjAttributesCGetPalette(sprite->c) << 4];
+			atomicPalette = &atomicPalette[GBAObjAttributesCGetPalette(sprite->c) << 4];
 			if (flags & FLAG_OBJWIN) {
 				SPRITE_NORMAL_LOOP(16, OBJWIN);
 			} else if (mosaicH > 1) {

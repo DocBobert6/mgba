@@ -132,6 +132,10 @@ void GBAVideoSoftwareRendererDrawBackgroundMode3(struct GBAVideoSoftwareRenderer
 			if (current & FLAG_OBJWIN) {
 				mergedFlags = objwinFlags;
 			}
+			/* Atomic capture: the pre-fade colour. When variant, the
+			   composite below passes _brighten/_darken(color) — the
+			   fade is re-applied by the frontend, never baked here. */
+			_atomicStore(renderer, background->index, outX, (mColor) color, _atomicFlagsFromWord(mergedFlags));
 			if (!variant) {
 				_compositeBlendObjwin(renderer, pixel, color | mergedFlags, current);
 			} else if (renderer->blendEffect == BLEND_BRIGHTEN) {
@@ -171,6 +175,9 @@ void GBAVideoSoftwareRendererDrawBackgroundMode4(struct GBAVideoSoftwareRenderer
 		uint32_t current = *pixel;
 		if (color && IS_WRITABLE(current)) {
 			if (!objwinSlowPath) {
+				/* Atomic capture: palette[] may be the faded variant;
+				   the pre-fade colour is normalPalette[color]. */
+				_atomicStore(renderer, background->index, outX, renderer->normalPalette[color], _atomicFlagsFromWord(flags));
 				_compositeBlendNoObjwin(renderer, pixel, palette[color] | flags, current);
 			} else if (background->objwinForceEnable || (!(current & FLAG_OBJWIN)) == background->objwinOnly) {
 				mColor* currentPalette = (current & FLAG_OBJWIN) ? objwinPalette : palette;
@@ -178,6 +185,7 @@ void GBAVideoSoftwareRendererDrawBackgroundMode4(struct GBAVideoSoftwareRenderer
 				if (current & FLAG_OBJWIN) {
 					mergedFlags = objwinFlags;
 				}
+				_atomicStore(renderer, background->index, outX, renderer->normalPalette[color], _atomicFlagsFromWord(mergedFlags));
 				_compositeBlendObjwin(renderer, pixel, currentPalette[color] | mergedFlags, current);
 			}
 		}
@@ -216,6 +224,8 @@ void GBAVideoSoftwareRendererDrawBackgroundMode5(struct GBAVideoSoftwareRenderer
 			if (current & FLAG_OBJWIN) {
 				mergedFlags = objwinFlags;
 			}
+			/* Atomic capture: the pre-fade colour (see mode 3). */
+			_atomicStore(renderer, background->index, outX, (mColor) color, _atomicFlagsFromWord(mergedFlags));
 			if (!variant) {
 				_compositeBlendObjwin(renderer, pixel, color | mergedFlags, current);
 			} else if (renderer->blendEffect == BLEND_BRIGHTEN) {

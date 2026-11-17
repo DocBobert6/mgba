@@ -34,6 +34,95 @@ void GBAVideoSoftwareRendererPostprocessSprite(struct GBAVideoSoftwareRenderer* 
 static inline unsigned _brighten(unsigned color, int y);
 static inline unsigned _darken(unsigned color, int y);
 
+// Atomic per-layer capture (Phase 2.1). The store records the PRE-BLEND
+// colour of one pixel of one layer (0-3 = BG0-3, 4 = OBJ); the flag byte
+// is derived from the mGBA flag word the composite funnel computed.
+// No-op unless capture is enabled. The scanline is renderer->
+// atomicScanline, set by DrawScanline before any drawing.
+static inline uint8_t _atomicFlagsFromWord(uint32_t flags) {
+	uint8_t b = ATOMIC_FLAG_COVERED;
+	if (flags & FLAG_TARGET_1) {
+		b |= ATOMIC_FLAG_TARGET1;
+	}
+	if (flags & FLAG_TARGET_2) {
+		b |= ATOMIC_FLAG_TARGET2;
+	}
+	if (flags & FLAG_REBLEND) {
+		b |= ATOMIC_FLAG_REBLEND;
+	}
+	return b;
+}
+
+static inline void _atomicStore(struct GBAVideoSoftwareRenderer* renderer, unsigned layer, int x, mColor color, uint8_t flagByte) {
+	mColor* plane;
+	uint8_t* flagPlane;
+	size_t off;
+	if (!renderer->atomicLayersEnabled) {
+		return;
+	}
+	if (layer >= ATOMIC_LAYER_COUNT || x < 0 || x >= GBA_VIDEO_HORIZONTAL_PIXELS) {
+		return;
+	}
+	plane = renderer->atomicLayers[layer];
+	flagPlane = renderer->atomicLayerFlags[layer];
+	if (!plane || !flagPlane) {
+		return;
+	}
+	off = (size_t) renderer->atomicScanline * GBA_VIDEO_HORIZONTAL_PIXELS + (size_t) x;
+	plane[off] = color;
+	flagPlane[off] = flagByte;
+}
+
+// OBJ capture: mirrors spriteLayer. The colour store runs wherever
+// spriteLayer gets a colour; the flags update runs wherever spriteLayer
+// gets the transparent-pixel flags-only update (the stored colour and
+// its semi-transparent bit stay, priority/target1/reblend follow the
+// new sprite). A sprite's TARGET_2 comes from target2Obj, which
+// PostprocessSprite ORs in at composite time — the sprite flags word
+// never carries it.
+static inline void _atomicObjStore(struct GBAVideoSoftwareRenderer* renderer, int x, mColor color, uint32_t flags, bool semiTransparent) {
+	uint8_t b;
+	if (!renderer->atomicLayersEnabled) {
+		return;
+	}
+	if (x < 0 || x >= GBA_VIDEO_HORIZONTAL_PIXELS) {
+		return;
+	}
+	b = _atomicFlagsFromWord(flags);
+	if (renderer->target2Obj) {
+		b |= ATOMIC_FLAG_TARGET2;
+	}
+	b |= (uint8_t) ((flags & FLAG_PRIORITY) >> OFFSET_PRIORITY) & ATOMIC_FLAG_OBJ_PRIO_MASK;
+	if (semiTransparent) {
+		b |= ATOMIC_FLAG_SEMITRANS;
+	}
+	renderer->atomicObjRawColor[x] = color;
+	renderer->atomicObjRawFlags[x] = b;
+}
+
+static inline void _atomicObjUpdateFlags(struct GBAVideoSoftwareRenderer* renderer, int x, uint32_t flags) {
+	uint8_t b;
+	if (!renderer->atomicLayersEnabled) {
+		return;
+	}
+	if (x < 0 || x >= GBA_VIDEO_HORIZONTAL_PIXELS) {
+		return;
+	}
+	b = renderer->atomicObjRawFlags[x];
+	if (!(b & ATOMIC_FLAG_COVERED)) {
+		return;
+	}
+	b &= (uint8_t) ~(ATOMIC_FLAG_OBJ_PRIO_MASK | ATOMIC_FLAG_TARGET1 | ATOMIC_FLAG_REBLEND);
+	b |= (uint8_t) ((flags & FLAG_PRIORITY) >> OFFSET_PRIORITY) & ATOMIC_FLAG_OBJ_PRIO_MASK;
+	if (flags & FLAG_TARGET_1) {
+		b |= ATOMIC_FLAG_TARGET1;
+	}
+	if (flags & FLAG_REBLEND) {
+		b |= ATOMIC_FLAG_REBLEND;
+	}
+	renderer->atomicObjRawFlags[x] = b;
+}
+
 // We stash the priority on the top bits so we can do a one-operator comparison
 // The lower the number, the higher the priority, and sprites take precedence over backgrounds
 // We want to do special processing if the color pixel is target 1, however
@@ -96,6 +185,7 @@ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* re
 		} else { \
 			color = palette[paletteData | pixelData]; \
 		} \
+		_atomicStore(renderer, background->index, (int) (pixel - renderer->row) + IDX, renderer->normalPalette[paletteData | pixelData], _atomicFlagsFromWord(mergedFlags)); \
 		_composite ## BLEND ## Objwin(renderer, &pixel[IDX], color | mergedFlags, current); \
 	}
 
@@ -107,6 +197,7 @@ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* re
 		} else { \
 			color = palette[paletteData | pixelData]; \
 		} \
+		_atomicStore(renderer, background->index, (int) (pixel - renderer->row) + IDX, renderer->normalPalette[paletteData | pixelData], _atomicFlagsFromWord(flags)); \
 		_composite ## BLEND ## NoObjwin(renderer, &pixel[IDX], color | flags, current); \
 	}
 
@@ -122,6 +213,7 @@ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* re
 		} else { \
 			color = palette[pixelData]; \
 		} \
+		_atomicStore(renderer, background->index, (int) (pixel - renderer->row) + IDX, renderer->normalPalette[pixelData], _atomicFlagsFromWord(mergedFlags)); \
 		_composite ## BLEND ## Objwin(renderer, &pixel[IDX], color | mergedFlags, current); \
 	}
 
@@ -133,6 +225,7 @@ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* re
 		} else { \
 			color = palette[pixelData]; \
 		} \
+		_atomicStore(renderer, background->index, (int) (pixel - renderer->row) + IDX, renderer->normalPalette[pixelData], _atomicFlagsFromWord(flags)); \
 		_composite ## BLEND ## NoObjwin(renderer, &pixel[IDX], color | flags, current); \
 	}
 

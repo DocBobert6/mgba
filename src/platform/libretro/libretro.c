@@ -27,6 +27,7 @@
 #endif
 #include <mgba-util/memory.h>
 #include <mgba-util/vfs.h>
+#include "libretro-atomic.h"
 #include "libretro-vfs.h"
 
 #ifndef __LIBRETRO__
@@ -84,6 +85,13 @@ static int32_t _readGyroZ(struct mRotationSource* source);
 static void _setupMaps(struct mCore* core);
 
 static struct mCore* core;
+
+/* Atomic per-layer capture (Phase 2.1): libretro-atomic.c reaches the
+   renderer through here. Internal to the .so — the name matches
+   neither retro_* nor atomic_*, so the version script keeps it local. */
+struct mCore* libretroCoreInstance(void) {
+	return core;
+}
 static mColor* outputBuffer = NULL;
 static struct LibretroAudioConverter audioConverter;
 static int16_t *audioSampleBuffer = NULL;
@@ -1702,6 +1710,17 @@ void retro_run(void) {
 			videoCallback(outputBuffer, width, height, VIDEO_WIDTH_MAX * sizeof(mColor));
 	} else {
 		videoCallback(NULL, width, height, VIDEO_WIDTH_MAX * sizeof(mColor));
+	}
+
+	/* Atomic per-layer capture (Phase 2.1): run the layer planes
+	   through the same colour-correction LUT as the composited frame,
+	   into a second set of planes (never in place). The gate is the
+	   same as the composited frame's — colour correction on or off —
+	   so the layers always match the frame the frontend shows. */
+	if (colorCorrectionEnabled) {
+		atomic_layers_apply_color_correction(ccLUT);
+	} else {
+		atomic_layers_clear_color_correction();
 	}
 
 	/* Check whether audio sample rate has changed */
