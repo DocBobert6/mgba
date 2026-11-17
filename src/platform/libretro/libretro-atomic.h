@@ -18,7 +18,7 @@
  * atomic-layers.h and its size is available at runtime through
  * atomic_layers_metadata_size().
  *
- * The five functions below are the whole API, and the only atomic_*
+ * The functions below are the whole API, and the only atomic_*
  * symbols the core exports (see link.T). The bridge calls them under
  * its core mutex, after retro_run, on the emulation thread.
  */
@@ -30,6 +30,56 @@ extern "C" {
 #endif
 
 struct AtomicScanlineMeta;
+
+/* Tile deduplication (Phase 2.2). The software renderer records the
+   identity of every text-mode background tile it fetches into a
+   per-scanline key grid (see atomic-tiles.h for the layout, the key
+   packing and the version scheme), and bumps per-palette / per-VRAM-
+   slot generations on palette / VRAM writes plus a global epoch on
+   renderer reset (including state load). The frontend reads the grid
+   and the versions once per frame (after retro_run, under its core
+   mutex) and builds its atlas keys from them. A key is
+   hash(grid keys || 12x12 coverage mask || palette versions ||
+   VRAM versions || epoch); the grid, the flag planes and the
+   versions together determine every texel of every 12x12 MMPX patch,
+   so a matching key means an identical 16x16 upscaled block. */
+
+/* Grid geometry, kept in sync with atomic-tiles.h by the host harness
+   (which compiles both headers and asserts equality). */
+#define ATOMIC_TILES_LAYERS 4
+#define ATOMIC_TILES_ROWS 160
+#define ATOMIC_TILES_COLS 32
+#define ATOMIC_TILES_CELLS \
+	(ATOMIC_TILES_LAYERS * ATOMIC_TILES_ROWS * ATOMIC_TILES_COLS)
+#define ATOMIC_TILES_PALETTE_GENS 32
+#define ATOMIC_TILES_VRAM_SLOTS 3072
+
+/* 1 when the tile grids are allocated (i.e. the layer capture is
+   allocated). 0 before a game is loaded or on any other renderer.
+   Frontends fall back to the full-screen MMPX pass when 0. */
+int atomic_tiles_available(void);
+
+/* Copy the 4 BG tile-key grids (ATOMIC_TILES_CELLS u32 keys, layer 0-3,
+   row-major: layer, scanline, column+1) into the caller's array, which
+   must hold atomic_tiles_grid_size() bytes. Returns 1 on success, 0
+   when tiles are unavailable. */
+int atomic_tiles_get_grid(uint32_t* out);
+
+/* Copy the invalidation state into the caller's arrays: the 32
+   per-palette generations, the 3072 per-VRAM-slot generations, the
+   global epoch, and a flags word (bit 0: a tile's lattice column fell
+   outside [-1, 30] since the last read — proven impossible for a
+   drawn tile; the frontend must drop dedup for the frame if set).
+   The flags word is cleared on read. Returns 1 on success, 0 when
+   tiles are unavailable. */
+int atomic_tiles_get_versions(uint32_t* outPaletteGen,
+                              uint32_t* outVramGen,
+                              uint32_t* outEpoch,
+                              uint32_t* outFlags);
+
+/* Size in bytes of the tile-key grids (81920). Frontends size their
+   grid buffer from this, never from a hardcoded constant. */
+size_t atomic_tiles_grid_size(void);
 
 /* Layer count / geometry. Kept in sync with atomic-layers.h by the
    host harness (which compiles both headers and asserts equality). */

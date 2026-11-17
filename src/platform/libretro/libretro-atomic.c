@@ -25,6 +25,12 @@ typedef char atomic_layers_width_check[ATOMIC_LAYERS_WIDTH == ATOMIC_LAYER_WIDTH
 typedef char atomic_layers_height_check[ATOMIC_LAYERS_HEIGHT == ATOMIC_LAYER_HEIGHT ? 1 : -1];
 typedef char atomic_layers_pixels_check[ATOMIC_LAYERS_PIXELS == ATOMIC_LAYER_PIXELS ? 1 : -1];
 typedef char atomic_meta_size_check[sizeof(struct AtomicScanlineMeta) == ATOMIC_META_SIZE ? 1 : -1];
+typedef char atomic_tiles_layers_check[ATOMIC_TILES_LAYERS == ATOMIC_TILE_GRID_LAYERS ? 1 : -1];
+typedef char atomic_tiles_rows_check[ATOMIC_TILES_ROWS == ATOMIC_TILE_GRID_ROWS ? 1 : -1];
+typedef char atomic_tiles_cols_check[ATOMIC_TILES_COLS == ATOMIC_TILE_GRID_COLS ? 1 : -1];
+typedef char atomic_tiles_cells_check[ATOMIC_TILES_CELLS == ATOMIC_TILE_GRID_CELLS ? 1 : -1];
+typedef char atomic_tiles_palette_check[ATOMIC_TILES_PALETTE_GENS == ATOMIC_TILE_PALETTE_GENS ? 1 : -1];
+typedef char atomic_tiles_vram_check[ATOMIC_TILES_VRAM_SLOTS == ATOMIC_TILE_VRAM_SLOTS ? 1 : -1];
 
 /* Second set of layer planes holding the colour-corrected colours.
    Written by atomic_layers_apply_color_correction() once per frame
@@ -79,6 +85,57 @@ static bool _atomicLayersAllocated(struct GBAVideoSoftwareRenderer* renderer) {
 		}
 	}
 	return true;
+}
+
+static bool _atomicTilesAllocated(struct GBAVideoSoftwareRenderer* renderer) {
+	int i;
+	if (!_atomicLayersAllocated(renderer)) {
+		return false;
+	}
+	for (i = 0; i < ATOMIC_TILE_GRID_LAYERS; ++i) {
+		if (!renderer->atomicTileGrid[i]) {
+			return false;
+		}
+	}
+	return true;
+}
+
+int atomic_tiles_available(void) {
+	return _atomicTilesAllocated(_atomicRenderer()) ? 1 : 0;
+}
+
+int atomic_tiles_get_grid(uint32_t* out) {
+	struct GBAVideoSoftwareRenderer* renderer = _atomicRenderer();
+	int i;
+	if (!_atomicTilesAllocated(renderer) || !out) {
+		return 0;
+	}
+	for (i = 0; i < ATOMIC_TILE_GRID_LAYERS; ++i) {
+		memcpy(&out[(size_t) i * ATOMIC_TILE_GRID_ROWS * ATOMIC_TILE_GRID_COLS],
+		       renderer->atomicTileGrid[i],
+		       ATOMIC_TILE_GRID_ROWS * ATOMIC_TILE_GRID_COLS * sizeof(uint32_t));
+	}
+	return 1;
+}
+
+int atomic_tiles_get_versions(uint32_t* outPaletteGen,
+                              uint32_t* outVramGen,
+                              uint32_t* outEpoch,
+                              uint32_t* outFlags) {
+	struct GBAVideoSoftwareRenderer* renderer = _atomicRenderer();
+	if (!_atomicTilesAllocated(renderer) || !outPaletteGen || !outVramGen || !outEpoch || !outFlags) {
+		return 0;
+	}
+	memcpy(outPaletteGen, renderer->atomicPaletteGen, sizeof(renderer->atomicPaletteGen));
+	memcpy(outVramGen, renderer->atomicVramGen, sizeof(renderer->atomicVramGen));
+	*outEpoch = renderer->atomicEpoch;
+	*outFlags = renderer->atomicTileGridOverflow ? 1u : 0u;
+	renderer->atomicTileGridOverflow = false;
+	return 1;
+}
+
+size_t atomic_tiles_grid_size(void) {
+	return ATOMIC_TILE_GRID_CELLS * sizeof(uint32_t);
 }
 
 int atomic_layers_available(void) {

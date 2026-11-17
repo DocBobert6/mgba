@@ -85,6 +85,9 @@ struct Window {
 /* Atomic per-layer capture (Phase 2.1). See atomic-layers.h for the
    buffer layout, flag-byte format and per-scanline metadata. */
 #include <mgba/internal/gba/renderers/atomic-layers.h>
+/* Atomic tile deduplication (Phase 2.2). See atomic-tiles.h for the
+   grid layout, key packing and version scheme. */
+#include <mgba/internal/gba/renderers/atomic-tiles.h>
 
 struct GBAVideoSoftwareRenderer {
 	struct GBAVideoRenderer d;
@@ -180,6 +183,27 @@ struct GBAVideoSoftwareRenderer {
 	   so reading the mask after post-processing would lose pixels
 	   the blend/fade passes touched. */
 	uint8_t atomicObjwinMask[30];
+	/* Atomic tile deduplication (Phase 2.2). Per-scanline tile-key
+	   grids for BG0-3 (see atomic-tiles.h): one u32 key per
+	   (scanline, lattice column), columns stored at index col+1.
+	   Allocated in AtomicAlloc, freed in AtomicFree; a row is
+	   cleared in AtomicClearScanline and filled by the mode-0 draw
+	   as it fetches tiles. A NULL grid (allocation failed) means
+	   the tiles API reports unavailable and the frontend falls back
+	   to the full-screen MMPX pass. */
+	uint32_t* atomicTileGrid[ATOMIC_TILE_GRID_LAYERS];
+	/* Invalidation generations (see atomic-tiles.h): per-palette
+	   (32: 16 BG + 16 OBJ) and per-32-byte-VRAM-slot (3072), bumped
+	   in WritePalette / WriteVRAM. The epoch bumps on every renderer
+	   reset (including state load). The grid-overflow flag is set by
+	   the tile record if a tile's lattice column ever falls outside
+	   [-1, 30] (proven impossible for a drawn tile; the flag is
+	   defence in depth — the tiles getter reports it and clears it,
+	   and the frontend drops dedup for that frame). */
+	uint32_t atomicPaletteGen[ATOMIC_TILE_PALETTE_GENS];
+	uint32_t atomicVramGen[ATOMIC_TILE_VRAM_SLOTS];
+	uint32_t atomicEpoch;
+	bool atomicTileGridOverflow;
 };
 
 void GBAVideoSoftwareRendererCreate(struct GBAVideoSoftwareRenderer* renderer);

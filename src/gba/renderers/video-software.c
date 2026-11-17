@@ -154,6 +154,12 @@ static void GBAVideoSoftwareRendererReset(struct GBAVideoRenderer* renderer) {
 
 	softwareRenderer->lastHighlightAmount = 0;
 
+	/* Atomic tile dedup (Phase 2.2): a reset retires the whole
+	   atlas, even if VRAM/palette contents happen to match the old
+	   generations. State load ends in renderer reset
+	   (GBAVideoDeserialize -> reset), so this covers state load too. */
+	++softwareRenderer->atomicEpoch;
+
 	for (i = 0; i < 4; ++i) {
 		struct GBAVideoSoftwareBackground* bg = &softwareRenderer->bg[i];
 		memset(bg, 0, sizeof(*bg));
@@ -412,6 +418,15 @@ static void GBAVideoSoftwareRendererWriteVRAM(struct GBAVideoRenderer* renderer,
 	if (renderer->cache) {
 		mCacheSetWriteVRAM(renderer->cache, address);
 	}
+	/* Atomic tile dedup (Phase 2.2): every VRAM write retires the
+	   atlas entries built from that 32-byte slot. All VRAM writes
+	   funnel through here — CPU 8/16/32-bit stores and DMA (which
+	   goes through cpu->memory.store32/store16) — so no write can
+	   slip past. No-change stores never reach this hook (the store
+	   macros compare first), and a no-change write needs no bump. */
+	if (address < ATOMIC_TILE_VRAM_SIZE) {
+		++softwareRenderer->atomicVramGen[address >> 5];
+	}
 	memset(softwareRenderer->scanlineDirty, 0xFFFFFFFF, sizeof(softwareRenderer->scanlineDirty));
 	softwareRenderer->bg[0].yCache = -1;
 	softwareRenderer->bg[1].yCache = -1;
@@ -430,6 +445,21 @@ static void GBAVideoSoftwareRendererWritePalette(struct GBAVideoRenderer* render
 	struct GBAVideoSoftwareRenderer* softwareRenderer = (struct GBAVideoSoftwareRenderer*) renderer;
 	mColor color = mColorFrom555(value);
 	softwareRenderer->normalPalette[address >> 1] = color;
+	/* Atomic tile dedup (Phase 2.2): a palette write retires the
+	   atlas entries built from that palette (palette animation:
+	   blinking cursor, pulsing text, fades). address is a byte
+	   address; the palette index is address>>1 (0-511: 0-255 BG,
+	   256-511 OBJ). The captured layer colours come from
+	   normalPalette only (never variant/highlight), so this is the
+	   only palette input the atlas depends on. */
+	if (address < 1024) {
+		unsigned palIndex = address >> 1;
+		if (palIndex < 256) {
+			++softwareRenderer->atomicPaletteGen[palIndex >> 4];
+		} else {
+			++softwareRenderer->atomicPaletteGen[16 + ((palIndex - 256) >> 4)];
+		}
+	}
 	if (softwareRenderer->blendEffect == BLEND_BRIGHTEN) {
 		softwareRenderer->variantPalette[address >> 1] = _brighten(color, softwareRenderer->bldy);
 	} else if (softwareRenderer->blendEffect == BLEND_DARKEN) {
@@ -1175,6 +1205,13 @@ static void GBAVideoSoftwareRendererAtomicAlloc(struct GBAVideoSoftwareRenderer*
 	if (!renderer->atomicMeta) {
 		renderer->atomicMeta = malloc(GBA_VIDEO_VERTICAL_PIXELS * sizeof(struct AtomicScanlineMeta));
 	}
+	/* Atomic tile dedup (Phase 2.2): one grid per BG layer, 160
+	   rows x 32 cols of u32 keys (see atomic-tiles.h). */
+	for (i = 0; i < ATOMIC_TILE_GRID_LAYERS; ++i) {
+		if (!renderer->atomicTileGrid[i]) {
+			renderer->atomicTileGrid[i] = malloc(ATOMIC_TILE_GRID_ROWS * ATOMIC_TILE_GRID_COLS * sizeof(uint32_t));
+		}
+	}
 	/* Start empty: no layer covers any pixel, no metadata. A partial
 	   allocation (any plane NULL) simply captures nothing for that
 	   plane; the accessors report it. */
@@ -1189,6 +1226,12 @@ static void GBAVideoSoftwareRendererAtomicAlloc(struct GBAVideoSoftwareRenderer*
 	if (renderer->atomicMeta) {
 		memset(renderer->atomicMeta, 0, GBA_VIDEO_VERTICAL_PIXELS * sizeof(struct AtomicScanlineMeta));
 	}
+	for (i = 0; i < ATOMIC_TILE_GRID_LAYERS; ++i) {
+		if (renderer->atomicTileGrid[i]) {
+			memset(renderer->atomicTileGrid[i], 0,
+			       ATOMIC_TILE_GRID_ROWS * ATOMIC_TILE_GRID_COLS * sizeof(uint32_t));
+		}
+	}
 }
 
 static void GBAVideoSoftwareRendererAtomicFree(struct GBAVideoSoftwareRenderer* renderer) {
@@ -1201,6 +1244,10 @@ static void GBAVideoSoftwareRendererAtomicFree(struct GBAVideoSoftwareRenderer* 
 	}
 	free(renderer->atomicMeta);
 	renderer->atomicMeta = NULL;
+	for (i = 0; i < ATOMIC_TILE_GRID_LAYERS; ++i) {
+		free(renderer->atomicTileGrid[i]);
+		renderer->atomicTileGrid[i] = NULL;
+	}
 }
 
 static void GBAVideoSoftwareRendererAtomicClearScanline(struct GBAVideoSoftwareRenderer* renderer, int y) {
@@ -1216,6 +1263,19 @@ static void GBAVideoSoftwareRendererAtomicClearScanline(struct GBAVideoSoftwareR
 	}
 	memset(renderer->atomicObjRawColor, 0, sizeof(renderer->atomicObjRawColor));
 	memset(renderer->atomicObjRawFlags, 0, sizeof(renderer->atomicObjRawFlags));
+	/* Atomic tile dedup (Phase 2.2): this scanline's grid rows start
+	   empty; the mode-0 draw fills them as it fetches tiles. A
+	   scanline that is not dirty keeps the previous frame's grid
+	   rows, exactly like its layer rows — the content did not
+	   change, or the scanline would be dirty (VRAM/palette writes
+	   mark every scanline dirty; I/O writes mark the scanline whose
+	   cached register changed). */
+	for (i = 0; i < ATOMIC_TILE_GRID_LAYERS; ++i) {
+		if (renderer->atomicTileGrid[i]) {
+			memset(&renderer->atomicTileGrid[i][(size_t) y * ATOMIC_TILE_GRID_COLS], 0,
+			       ATOMIC_TILE_GRID_COLS * sizeof(uint32_t));
+		}
+	}
 }
 
 static void GBAVideoSoftwareRendererAtomicSnapshotScanline(struct GBAVideoSoftwareRenderer* renderer, int y) {

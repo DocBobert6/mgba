@@ -53,6 +53,71 @@ static inline uint8_t _atomicFlagsFromWord(uint32_t flags) {
 	return b;
 }
 
+// Atomic tile dedup (Phase 2.2). Record the identity of one fetched
+// text-mode tile into the per-scanline key grid (see atomic-tiles.h).
+// Called at the tile-fetch point in software-mode0.c, where mapData
+// is already in scope, for every tile fetched — including tiles whose
+// pixels are all transparent (identity is still real; the coverage
+// mask says uncovered) and tiles skipped for charBase >= 0x10000.
+// No-op unless capture is enabled. The scanline is
+// renderer->atomicScanline, set by DrawScanline before any drawing.
+// The tile's logical screen start is renderer->start + tileX*8 -
+// (inX & 7): the suffix tile's logical start is start - (inX & 7),
+// the prefix tile's is start + tileEnd*8 - (inX & 7), a full tile's
+// is its visible start — one formula covers all three. Its lattice
+// column is floor((sx+3)/8), the column whose centre (4+8k) the
+// tile's logical span [sx, sx+8) contains, computed in unsigned
+// arithmetic as ((sx+11)>>3)-1 so negative starts stay exact.
+// The draw runs once per priority level per window segment, so a tile
+// is recorded up to 4 times per scanline — the same key into the same
+// cell, idempotent. Mosaic draws never record (mosaic layers fall
+// back to the full-screen pass); affine/bitmap draws have no tile
+// fetch and record nothing.
+static inline void _atomicTileRecord(struct GBAVideoSoftwareRenderer* renderer,
+                                     struct GBAVideoSoftwareBackground* background,
+                                     uint16_t mapData, int tileX, int inX) {
+	uint32_t* grid;
+	int y, col;
+	uint32_t key, addr;
+	if (!renderer->atomicLayersEnabled) {
+		return;
+	}
+	if (background->index >= ATOMIC_TILE_GRID_LAYERS) {
+		return;
+	}
+	grid = renderer->atomicTileGrid[background->index];
+	if (!grid) {
+		return;
+	}
+	y = renderer->atomicScanline;
+	if (y < 0 || y >= GBA_VIDEO_VERTICAL_PIXELS) {
+		return;
+	}
+	/* sx is in [-7, 239] for any drawn tile (its logical span
+	   [sx, sx+8) intersects [start, end)); sx+11 is non-negative,
+	   so the shift is exact. col is in [-1, 30]. */
+	col = (int) ((((renderer->start + tileX * 8 - (inX & 0x7)) + 11) >> 3) - 1);
+	if (col < -1 || col > 30) {
+		renderer->atomicTileGridOverflow = true;
+		return;
+	}
+	if (background->multipalette) {
+		addr = background->charBase + ((uint32_t) GBA_TEXT_MAP_TILE(mapData) << 6);
+		key = (addr & ATOMIC_TILE_KEY_ADDR_MASK) | ATOMIC_TILE_KEY_DEPTH_8BPP;
+	} else {
+		addr = background->charBase + ((uint32_t) GBA_TEXT_MAP_TILE(mapData) << 5);
+		key = (addr & ATOMIC_TILE_KEY_ADDR_MASK) |
+		      (((uint32_t) GBA_TEXT_MAP_PALETTE(mapData) & ATOMIC_TILE_KEY_PALETTE_MASK) << ATOMIC_TILE_KEY_PALETTE_SHIFT);
+	}
+	if (GBA_TEXT_MAP_HFLIP(mapData)) {
+		key |= ATOMIC_TILE_KEY_HFLIP;
+	}
+	if (GBA_TEXT_MAP_VFLIP(mapData)) {
+		key |= ATOMIC_TILE_KEY_VFLIP;
+	}
+	grid[(size_t) y * ATOMIC_TILE_GRID_COLS + (size_t) (col + ATOMIC_TILE_GRID_COL_OFFSET)] = key;
+}
+
 static inline void _atomicStore(struct GBAVideoSoftwareRenderer* renderer, unsigned layer, int x, mColor color, uint8_t flagByte) {
 	mColor* plane;
 	uint8_t* flagPlane;

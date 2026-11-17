@@ -144,6 +144,7 @@
 #define DRAW_BACKGROUND_MODE_0_TILES_16(BLEND, OBJWIN) \
 	for (; tileX < tileEnd; ++tileX) { \
 		mapData = background->mapCache[(localX >> 3) & 0x3F]; \
+		_atomicTileRecord(renderer, background, mapData, tileX, inX); \
 		localX += 8; \
 		localY = inY & 0x7; \
 		if (GBA_TEXT_MAP_VFLIP(mapData)) { \
@@ -270,6 +271,7 @@
 #define DRAW_BACKGROUND_MODE_0_TILES_256(BLEND, OBJWIN) \
 	for (; tileX < tileEnd; ++tileX) { \
 		mapData = background->mapCache[(localX >> 3) & 0x3F]; \
+		_atomicTileRecord(renderer, background, mapData, tileX, inX); \
 		localX += 8; \
 		localY = inY & 0x7; \
 		if (GBA_TEXT_MAP_VFLIP(mapData)) { \
@@ -426,6 +428,7 @@
 	if (inX & 0x7) { \
 		localX = tileX * 8 + inX; \
 		BACKGROUND_TEXT_SELECT_CHARACTER; \
+		_atomicTileRecord(renderer, background, mapData, tileX, inX); \
 		localY = inY & 0x7; \
 		if (GBA_TEXT_MAP_VFLIP(mapData)) { \
 			localY = 7 - localY; \
@@ -464,6 +467,7 @@
 	if (length & 0x7) { \
 		localX = tileX * 8 + inX; \
 		BACKGROUND_TEXT_SELECT_CHARACTER; \
+		_atomicTileRecord(renderer, background, mapData, tileX, inX); \
 		localY = inY & 0x7; \
 		if (GBA_TEXT_MAP_VFLIP(mapData)) { \
 			localY = 7 - localY; \
