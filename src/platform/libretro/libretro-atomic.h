@@ -137,6 +137,63 @@ size_t atomic_layers_metadata_size(void);
 void atomic_layers_apply_color_correction(const uint16_t* lut);
 void atomic_layers_clear_color_correction(void);
 
+/* Affine supersampling (Phase 2.5). The software renderer records,
+   per scanline, the BG2CNT/BG3CNT map geometry (bgCnt[2] in the
+   metadata) and the full 512-entry palette (one row per scanline),
+   and the frontend reads the game's VRAM (96 KB) through
+   atomic_affine_get_vram. The GPU affine rasteriser evaluates the
+   hardware's own affine transform per output pixel from those three
+   inputs; the 1x layer planes stay the coverage authority (see the
+   coverage rule in the Phase 2.5 plan). The versions word gates the
+   frontend's texture uploads: the VRAM texture is re-uploaded when
+   the VRAM version (or the epoch, which bumps on renderer reset
+   including state load) changes; the palette texture is
+   re-uploaded when any of the 32 per-palette generations changes. */
+
+/* Geometry, kept in sync with the renderer by the host harness. */
+#define ATOMIC_AFFINE_VRAM_SIZE 98304
+#define ATOMIC_AFFINE_PALETTE_ROWS 160
+#define ATOMIC_AFFINE_PALETTE_COLS 512
+#define ATOMIC_AFFINE_PALETTE_GENS 32
+/* Versions word: vramVersion + epoch + 32 per-palette generations. */
+#define ATOMIC_AFFINE_VERSIONS_COUNT 34
+
+/* 1 when the affine data is available (i.e. the layer capture is
+   allocated and the palette history is allocated). 0 before a game
+   is loaded or on any other renderer. Frontends fall back to the
+   MMPX pass when 0. */
+int atomic_affine_available(void);
+
+/* Copy the game's VRAM (ATOMIC_AFFINE_VRAM_SIZE bytes) into the
+   caller's buffer and write the single VRAM version counter into
+   *outVersion (bumped on every VRAM write). Returns 1 on success,
+   0 when affine data is unavailable. */
+int atomic_affine_get_vram(uint8_t* out, uint32_t* outVersion);
+
+/* Copy the per-scanline palette history (ATOMIC_AFFINE_PALETTE_ROWS
+   x ATOMIC_AFFINE_PALETTE_COLS mColor, row-major: scanline, palette
+   index) into the caller's buffer, which must hold
+   atomic_affine_palette_history_size() bytes. Returns 1 on success,
+   0 when affine data is unavailable. When the core's colour
+   correction is enabled, the returned colours are the
+   colour-corrected ones (same LUT as the composited frame and the
+   layer planes); otherwise they are the raw captured colours. */
+int atomic_layers_get_palette_history(uint16_t* out);
+
+/* Copy the invalidation state into the caller's array, which must
+   hold atomic_affine_versions_size() bytes (ATOMIC_AFFINE_VERSIONS_
+   COUNT u32): [0] the VRAM version, [1] the global epoch, [2..33]
+   the 32 per-palette generations. Returns 1 on success, 0 when
+   affine data is unavailable. */
+int atomic_affine_get_versions(uint32_t* out);
+
+/* Sizes in bytes of the VRAM block (98304), the palette history
+   (163840) and the versions word (136). Frontends size their
+   buffers from these, never from hardcoded constants. */
+size_t atomic_affine_vram_size(void);
+size_t atomic_affine_palette_history_size(void);
+size_t atomic_affine_versions_size(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -426,6 +426,11 @@ static void GBAVideoSoftwareRendererWriteVRAM(struct GBAVideoRenderer* renderer,
 	   macros compare first), and a no-change write needs no bump. */
 	if (address < ATOMIC_TILE_VRAM_SIZE) {
 		++softwareRenderer->atomicVramGen[address >> 5];
+		/* Atomic affine supersampling (Phase 2.5): the single
+		   version counter gates the frontend's VRAM texture
+		   upload (the per-slot gens are too fine-grained for a
+		   whole-texture gate). */
+		++softwareRenderer->atomicVramVersion;
 	}
 	memset(softwareRenderer->scanlineDirty, 0xFFFFFFFF, sizeof(softwareRenderer->scanlineDirty));
 	softwareRenderer->bg[0].yCache = -1;
@@ -1212,6 +1217,11 @@ static void GBAVideoSoftwareRendererAtomicAlloc(struct GBAVideoSoftwareRenderer*
 			renderer->atomicTileGrid[i] = malloc(ATOMIC_TILE_GRID_ROWS * ATOMIC_TILE_GRID_COLS * sizeof(uint32_t));
 		}
 	}
+	/* Atomic affine supersampling (Phase 2.5): one 512-entry
+	   palette row per scanline (160 KB). */
+	if (!renderer->atomicPaletteHistory) {
+		renderer->atomicPaletteHistory = malloc(GBA_VIDEO_VERTICAL_PIXELS * 512 * sizeof(mColor));
+	}
 	/* Start empty: no layer covers any pixel, no metadata. A partial
 	   allocation (any plane NULL) simply captures nothing for that
 	   plane; the accessors report it. */
@@ -1232,6 +1242,10 @@ static void GBAVideoSoftwareRendererAtomicAlloc(struct GBAVideoSoftwareRenderer*
 			       ATOMIC_TILE_GRID_ROWS * ATOMIC_TILE_GRID_COLS * sizeof(uint32_t));
 		}
 	}
+	if (renderer->atomicPaletteHistory) {
+		memset(renderer->atomicPaletteHistory, 0,
+		       GBA_VIDEO_VERTICAL_PIXELS * 512 * sizeof(mColor));
+	}
 }
 
 static void GBAVideoSoftwareRendererAtomicFree(struct GBAVideoSoftwareRenderer* renderer) {
@@ -1248,6 +1262,8 @@ static void GBAVideoSoftwareRendererAtomicFree(struct GBAVideoSoftwareRenderer* 
 		free(renderer->atomicTileGrid[i]);
 		renderer->atomicTileGrid[i] = NULL;
 	}
+	free(renderer->atomicPaletteHistory);
+	renderer->atomicPaletteHistory = NULL;
 }
 
 static void GBAVideoSoftwareRendererAtomicClearScanline(struct GBAVideoSoftwareRenderer* renderer, int y) {
@@ -1334,6 +1350,23 @@ static void GBAVideoSoftwareRendererAtomicSnapshotScanline(struct GBAVideoSoftwa
 	meta->bgSx[1] = renderer->bg[3].sx;
 	meta->bgSy[0] = renderer->bg[2].sy;
 	meta->bgSy[1] = renderer->bg[3].sy;
+	/* Atomic affine supersampling (Phase 2.5): the map geometry
+	   (BG2CNT/BG3CNT) and this scanline's palette, for the GPU
+	   affine rasteriser. bgCnt lives in the scanline's cached I/O
+	   (synced from nextIo at the top of DrawScanline); the palette
+	   is normalPalette (raw — the colour-corrected copy is made in
+	   libretro-atomic.c, mirroring the layer planes). bgCnt == 0
+	   means unknown geometry — the frontend falls back to the
+	   MMPX pass for that layer. A non-dirty scanline keeps the
+	   previous frame's bgCnt/palette row, exactly like its layer
+	   rows (a palette write marks every scanline dirty; a BGCNT
+	   write marks the scanlines whose cached register changed). */
+	meta->bgCnt[0] = renderer->cache[y].io[GBA_REG_BG2CNT >> 1];
+	meta->bgCnt[1] = renderer->cache[y].io[GBA_REG_BG3CNT >> 1];
+	if (renderer->atomicPaletteHistory) {
+		memcpy(&renderer->atomicPaletteHistory[(size_t) y * 512],
+		       renderer->normalPalette, 512 * sizeof(mColor));
+	}
 	for (i = 0; i < renderer->nWindows && i < ATOMIC_MAX_WINDOWS; ++i) {
 		meta->winEndX[i] = renderer->windows[i].endX;
 		meta->winControl[i] = renderer->windows[i].control.packed;

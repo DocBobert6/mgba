@@ -204,6 +204,19 @@ struct GBAVideoSoftwareRenderer {
 	uint32_t atomicVramGen[ATOMIC_TILE_VRAM_SLOTS];
 	uint32_t atomicEpoch;
 	bool atomicTileGridOverflow;
+	/* Atomic affine supersampling (Phase 2.5). Per-scanline palette
+	   history: one 512-entry mColor row per scanline (160 KB),
+	   snapshotted in AtomicSnapshotScanline from normalPalette
+	   (raw, never variant/highlight — the colour-corrected copy
+	   lives in libretro-atomic.c, mirroring the layer planes).
+	   Allocated in AtomicAlloc, freed in AtomicFree; a NULL
+	   history means the affine API reports unavailable and the
+	   frontend falls back to the MMPX pass. The single VRAM
+	   version counter bumps on every VRAM write (alongside the
+	   per-slot gens); the frontend re-uploads its VRAM texture
+	   when it (or the epoch) changes. */
+	mColor* atomicPaletteHistory;
+	uint32_t atomicVramVersion;
 };
 
 void GBAVideoSoftwareRendererCreate(struct GBAVideoSoftwareRenderer* renderer);

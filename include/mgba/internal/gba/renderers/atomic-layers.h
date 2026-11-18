@@ -41,6 +41,19 @@ CXX_GUARD_START
  * won — is likewise uncovered: it could never have won the composite
  * and cannot be a blend partner, since it carries no TARGET_1.)
  *
+ * Affine supersampling (Phase 2.5): the software renderer also
+ * records, per scanline, the BG2CNT/BG3CNT map geometry (bgCnt[2]
+ * in the metadata, offset 132) and the full 512-entry palette
+ * (atomicPaletteHistory, one row per scanline — see
+ * video-software.h), and the frontend reads the game's VRAM
+ * (96 KB) through atomic_affine_get_vram. The GPU affine
+ * rasteriser evaluates the hardware's own affine transform per
+ * output pixel from those three inputs; the 1x layer planes above
+ * stay the coverage authority (see the coverage rule in the
+ * Phase 2.5 plan). The palette history and the VRAM are versioned
+ * (atomic_affine_get_versions): the frontend re-uploads its
+ * textures only when a version moves.
+ *
  * Per-scanline metadata: one AtomicScanlineMeta per scanline, in
  * scanline order. Layout is FIXED (144 bytes); the fields are ordered
  * so the struct has no compiler padding on any target (32-bit fields
@@ -92,7 +105,12 @@ CXX_GUARD_START
  *  100  winoutControl  u8   WINOUT low half (outside any window)
  *  101  objwinControl  u8   WINOUT high half (inside the OBJ window)
  *  102  objwinMask[30] u8   240 bits, 1 = pixel inside the OBJ window
- *  132  reserved[12]   u8   zero
+ *  132  bgCnt[2]       u16  BG2CNT/BG3CNT (affine map geometry:
+ *                           screen base, char base, size, overflow,
+ *                           mosaic — Phase 2.5). 0 on an old dump
+ *                           means unknown geometry; the frontend
+ *                           falls back to the MMPX pass.
+ *  136  reserved[8]    u8   zero
  *  Total: 144 bytes.
  */
 
@@ -140,7 +158,8 @@ struct AtomicScanlineMeta {
 	uint8_t winoutControl;
 	uint8_t objwinControl;
 	uint8_t objwinMask[30];
-	uint8_t reserved[12];
+	uint16_t bgCnt[2];
+	uint8_t reserved[8];
 };
 
 CXX_GUARD_START

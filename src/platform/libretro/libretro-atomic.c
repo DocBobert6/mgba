@@ -31,6 +31,10 @@ typedef char atomic_tiles_cols_check[ATOMIC_TILES_COLS == ATOMIC_TILE_GRID_COLS 
 typedef char atomic_tiles_cells_check[ATOMIC_TILES_CELLS == ATOMIC_TILE_GRID_CELLS ? 1 : -1];
 typedef char atomic_tiles_palette_check[ATOMIC_TILES_PALETTE_GENS == ATOMIC_TILE_PALETTE_GENS ? 1 : -1];
 typedef char atomic_tiles_vram_check[ATOMIC_TILES_VRAM_SLOTS == ATOMIC_TILE_VRAM_SLOTS ? 1 : -1];
+typedef char atomic_affine_vram_check[ATOMIC_AFFINE_VRAM_SIZE == 0x18000 ? 1 : -1];
+typedef char atomic_affine_palette_rows_check[ATOMIC_AFFINE_PALETTE_ROWS == GBA_VIDEO_VERTICAL_PIXELS ? 1 : -1];
+typedef char atomic_affine_palette_cols_check[ATOMIC_AFFINE_PALETTE_COLS == 512 ? 1 : -1];
+typedef char atomic_affine_versions_check[ATOMIC_AFFINE_VERSIONS_COUNT == ATOMIC_AFFINE_PALETTE_GENS + 2 ? 1 : -1];
 
 /* Second set of layer planes holding the colour-corrected colours.
    Written by atomic_layers_apply_color_correction() once per frame
@@ -44,6 +48,12 @@ static bool atomicCcValid = false;
    would composite an uncorrected backdrop under corrected layers.
    Written by the same hook, substituted by get_metadata when valid. */
 static mColor atomicBackdropCc[GBA_VIDEO_VERTICAL_PIXELS];
+/* Colour-corrected per-scanline palette history, one 512-entry row
+   per scanline. Written by atomic_layers_apply_color_correction()
+   once per frame (never in place), read by
+   atomic_layers_get_palette_history() when valid — the same pattern
+   as the layer planes above. */
+static mColor atomicPaletteHistoryCc[GBA_VIDEO_VERTICAL_PIXELS][512];
 
 /* The libretro core only associates the software renderer on the first
    retro_run (deferred setup -> core->reset), so a set_enabled() call
@@ -98,6 +108,13 @@ static bool _atomicTilesAllocated(struct GBAVideoSoftwareRenderer* renderer) {
 		}
 	}
 	return true;
+}
+
+static bool _atomicAffineAllocated(struct GBAVideoSoftwareRenderer* renderer) {
+	if (!_atomicLayersAllocated(renderer)) {
+		return false;
+	}
+	return renderer->atomicPaletteHistory != NULL;
 }
 
 int atomic_tiles_available(void) {
@@ -232,9 +249,76 @@ void atomic_layers_apply_color_correction(const uint16_t* lut) {
 	for (y = 0; y < GBA_VIDEO_VERTICAL_PIXELS; ++y) {
 		atomicBackdropCc[y] = lut[renderer->atomicMeta[y].backdrop];
 	}
+	/* Atomic affine supersampling (Phase 2.5): the per-scanline
+	   palette history goes through the same LUT into a second set
+	   of rows (never in place), so the palette-history getter
+	   returns corrected colours exactly when the layer planes do. */
+	if (renderer->atomicPaletteHistory) {
+		for (y = 0; y < GBA_VIDEO_VERTICAL_PIXELS; ++y) {
+			for (p = 0; p < 512; ++p) {
+				atomicPaletteHistoryCc[y][p] = lut[renderer->atomicPaletteHistory[(size_t) y * 512 + p]];
+			}
+		}
+	}
 	atomicCcValid = true;
 }
 
 void atomic_layers_clear_color_correction(void) {
 	atomicCcValid = false;
+}
+
+/* Atomic affine supersampling (Phase 2.5). */
+
+int atomic_affine_available(void) {
+	return _atomicAffineAllocated(_atomicRenderer()) ? 1 : 0;
+}
+
+int atomic_affine_get_vram(uint8_t* out, uint32_t* outVersion) {
+	struct GBAVideoSoftwareRenderer* renderer = _atomicRenderer();
+	if (!_atomicAffineAllocated(renderer) || !out || !renderer->d.vram) {
+		return 0;
+	}
+	memcpy(out, renderer->d.vram, ATOMIC_AFFINE_VRAM_SIZE);
+	if (outVersion) {
+		*outVersion = renderer->atomicVramVersion;
+	}
+	return 1;
+}
+
+int atomic_layers_get_palette_history(uint16_t* out) {
+	struct GBAVideoSoftwareRenderer* renderer = _atomicRenderer();
+	if (!_atomicAffineAllocated(renderer) || !out) {
+		return 0;
+	}
+	if (atomicCcValid) {
+		memcpy(out, atomicPaletteHistoryCc,
+		       ATOMIC_AFFINE_PALETTE_ROWS * ATOMIC_AFFINE_PALETTE_COLS * sizeof(mColor));
+	} else {
+		memcpy(out, renderer->atomicPaletteHistory,
+		       ATOMIC_AFFINE_PALETTE_ROWS * ATOMIC_AFFINE_PALETTE_COLS * sizeof(mColor));
+	}
+	return 1;
+}
+
+int atomic_affine_get_versions(uint32_t* out) {
+	struct GBAVideoSoftwareRenderer* renderer = _atomicRenderer();
+	if (!_atomicAffineAllocated(renderer) || !out) {
+		return 0;
+	}
+	out[0] = renderer->atomicVramVersion;
+	out[1] = renderer->atomicEpoch;
+	memcpy(&out[2], renderer->atomicPaletteGen, sizeof(renderer->atomicPaletteGen));
+	return 1;
+}
+
+size_t atomic_affine_vram_size(void) {
+	return ATOMIC_AFFINE_VRAM_SIZE;
+}
+
+size_t atomic_affine_palette_history_size(void) {
+	return ATOMIC_AFFINE_PALETTE_ROWS * ATOMIC_AFFINE_PALETTE_COLS * sizeof(mColor);
+}
+
+size_t atomic_affine_versions_size(void) {
+	return ATOMIC_AFFINE_VERSIONS_COUNT * sizeof(uint32_t);
 }
