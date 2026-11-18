@@ -1279,6 +1279,10 @@ static void GBAVideoSoftwareRendererAtomicClearScanline(struct GBAVideoSoftwareR
 	}
 	memset(renderer->atomicObjRawColor, 0, sizeof(renderer->atomicObjRawColor));
 	memset(renderer->atomicObjRawFlags, 0, sizeof(renderer->atomicObjRawFlags));
+	/* Atomic mosaic (Phase 2.6): defence in depth — the flag is
+	   reset at the top of every PreprocessSprite call; clearing it
+	   here too means a missed reset can only smear one scanline. */
+	renderer->atomicObjMosaic = false;
 	/* Atomic tile dedup (Phase 2.2): this scanline's grid rows start
 	   empty; the mode-0 draw fills them as it fetches tiles. A
 	   scanline that is not dirty keeps the previous frame's grid
@@ -1321,6 +1325,18 @@ static void GBAVideoSoftwareRendererAtomicSnapshotScanline(struct GBAVideoSoftwa
 	   re-applies the fade from blendEffect/bldy when the backdrop wins. */
 	meta->backdrop = renderer->normalPalette[0];
 	meta->mosaic = renderer->cache[y].io[GBA_REG_MOSAIC >> 1];
+	/* Atomic mosaic (Phase 2.6): per-BG mosaic enable, bit i =
+	   BGCNT[i] bit 6 — the core's own draw already baked the mosaic
+	   into the layer buffers; the frontend re-applies it at display
+	   res from the 1x texel at the block origin. Read from the
+	   scanline's cached BGCNTs, the same source as meta->mosaic
+	   (per-scanline correct, including mid-frame BGCNT changes). */
+	meta->mosaicEnable = 0;
+	for (i = 0; i < 4; ++i) {
+		if (GBARegisterBGCNTGetMosaic(renderer->cache[y].io[(GBA_REG_BG0CNT >> 1) + i])) {
+			meta->mosaicEnable |= (uint8_t) (1 << i);
+		}
+	}
 	meta->blendEffect = (uint8_t) renderer->blendEffect;
 	meta->forceTarget1 = renderer->forceTarget1 ? 1 : 0;
 	meta->forcedBlank = GBARegisterDISPCNTIsForcedBlank(renderer->dispcnt) ? 1 : 0;

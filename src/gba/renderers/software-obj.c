@@ -161,6 +161,12 @@
 	}
 
 int GBAVideoSoftwareRendererPreprocessSprite(struct GBAVideoSoftwareRenderer* renderer, struct GBAObj* sprite, int index, int y) {
+	/* Atomic mosaic (Phase 2.6): reset for every sprite (and every
+	   window segment — this function is called once per segment).
+	   The mosaicH > 1 dispatch branches below set it for the
+	   duration of a *_MOSAIC_LOOP; a non-mosaic sprite must never
+	   inherit a previous sprite's bit. */
+	renderer->atomicObjMosaic = false;
 	int width = GBAVideoObjSizes[GBAObjAttributesAGetShape(sprite->a) * 4 + GBAObjAttributesBGetSize(sprite->b)][0];
 	int height = GBAVideoObjSizes[GBAObjAttributesAGetShape(sprite->a) * 4 + GBAObjAttributesBGetSize(sprite->b)][1];
 	int start = renderer->start;
@@ -305,6 +311,10 @@ int GBAVideoSoftwareRendererPreprocessSprite(struct GBAVideoSoftwareRenderer* re
 			if (flags & FLAG_OBJWIN) {
 				SPRITE_TRANSFORMED_LOOP(16, OBJWIN);
 			} else if (mosaicH > 1) {
+				/* Atomic mosaic (Phase 2.6): this sprite draws
+				   through a mosaic loop — its stored texels get
+				   ATOMIC_FLAG_MOSAIC. */
+				renderer->atomicObjMosaic = true;
 				if (objwinSlowPath) {
 					objwinPalette = &objwinPalette[GBAObjAttributesCGetPalette(sprite->c) << 4];
 					SPRITE_TRANSFORMED_MOSAIC_LOOP(16, NORMAL_OBJWIN);
@@ -321,6 +331,7 @@ int GBAVideoSoftwareRendererPreprocessSprite(struct GBAVideoSoftwareRenderer* re
 			if (flags & FLAG_OBJWIN) {
 				SPRITE_TRANSFORMED_LOOP(256, OBJWIN);
 			} else if (mosaicH > 1) {
+				renderer->atomicObjMosaic = true;
 				if (objwinSlowPath) {
 					SPRITE_TRANSFORMED_MOSAIC_LOOP(256, NORMAL_OBJWIN);
 				} else {
@@ -363,6 +374,7 @@ int GBAVideoSoftwareRendererPreprocessSprite(struct GBAVideoSoftwareRenderer* re
 			if (flags & FLAG_OBJWIN) {
 				SPRITE_NORMAL_LOOP(16, OBJWIN);
 			} else if (mosaicH > 1) {
+				renderer->atomicObjMosaic = true;
 				if (objwinSlowPath) {
 					objwinPalette = &objwinPalette[GBAObjAttributesCGetPalette(sprite->c) << 4];
 					SPRITE_MOSAIC_LOOP(16, NORMAL_OBJWIN);
@@ -379,6 +391,7 @@ int GBAVideoSoftwareRendererPreprocessSprite(struct GBAVideoSoftwareRenderer* re
 			if (flags & FLAG_OBJWIN) {
 				SPRITE_NORMAL_LOOP(256, OBJWIN);
 			} else if (mosaicH > 1) {
+				renderer->atomicObjMosaic = true;
 				if (objwinSlowPath) {
 					SPRITE_MOSAIC_LOOP(256, NORMAL_OBJWIN);
 				} else {

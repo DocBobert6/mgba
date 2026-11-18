@@ -161,6 +161,12 @@ static inline void _atomicObjStore(struct GBAVideoSoftwareRenderer* renderer, in
 	if (semiTransparent) {
 		b |= ATOMIC_FLAG_SEMITRANS;
 	}
+	/* Atomic mosaic (Phase 2.6): set while the sprite being drawn
+	   runs through a *_MOSAIC_LOOP. _atomicObjUpdateFlags preserves
+	   this bit (its mask clears only prio/target1/reblend). */
+	if (renderer->atomicObjMosaic) {
+		b |= ATOMIC_FLAG_MOSAIC;
+	}
 	renderer->atomicObjRawColor[x] = color;
 	renderer->atomicObjRawFlags[x] = b;
 }

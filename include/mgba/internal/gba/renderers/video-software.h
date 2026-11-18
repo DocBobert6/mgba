@@ -177,6 +177,13 @@ struct GBAVideoSoftwareRenderer {
 	   layer 4 at the end of each drawn scanline. */
 	mColor atomicObjRawColor[GBA_VIDEO_HORIZONTAL_PIXELS];
 	uint8_t atomicObjRawFlags[GBA_VIDEO_HORIZONTAL_PIXELS];
+	/* Atomic mosaic (Phase 2.6): true while the sprite currently
+	   being preprocessed draws through a *_MOSAIC_LOOP (set in
+	   PreprocessSprite's mosaicH > 1 dispatch branches, reset at
+	   the top of every PreprocessSprite call and in
+	   AtomicClearScanline). _atomicObjStore ORs ATOMIC_FLAG_MOSAIC
+	   into the flag byte while this is set. */
+	bool atomicObjMosaic;
 	/* In-progress OBJWIN mask (30 bytes, bit x of byte x>>3), taken
 	   from row[] BEFORE PostprocessBuffer: passes (a)/(b) replace
 	   row entries with bare colours and drop the FLAG_OBJWIN bits,

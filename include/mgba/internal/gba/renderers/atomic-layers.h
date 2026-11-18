@@ -110,7 +110,11 @@ CXX_GUARD_START
  *                           mosaic — Phase 2.5). 0 on an old dump
  *                           means unknown geometry; the frontend
  *                           falls back to the MMPX pass.
- *  136  reserved[8]    u8   zero
+ *  136  mosaicEnable   u8   per-BG mosaic enable, bit i =
+ *                           BGCNT[i] bit 6 (Phase 2.6). 0 on an old
+ *                           dump means no mosaic info; the frontend
+ *                           renders today's picture.
+ *  137  reserved[7]    u8   zero
  *  Total: 144 bytes.
  */
 
@@ -122,6 +126,7 @@ CXX_GUARD_START
 #define ATOMIC_META_SIZE 144
 
 #define ATOMIC_FLAG_COVERED 0x80
+#define ATOMIC_FLAG_MOSAIC 0x40
 #define ATOMIC_FLAG_REBLEND 0x20
 #define ATOMIC_FLAG_SEMITRANS 0x10
 #define ATOMIC_FLAG_TARGET2 0x08
@@ -159,7 +164,8 @@ struct AtomicScanlineMeta {
 	uint8_t objwinControl;
 	uint8_t objwinMask[30];
 	uint16_t bgCnt[2];
-	uint8_t reserved[8];
+	uint8_t mosaicEnable;
+	uint8_t reserved[7];
 };
 
 CXX_GUARD_START
