@@ -114,7 +114,18 @@ CXX_GUARD_START
  *                           BGCNT[i] bit 6 (Phase 2.6). 0 on an old
  *                           dump means no mosaic info; the frontend
  *                           renders today's picture.
- *  137  reserved[7]    u8   zero
+ *  137  reserved       u8   zero
+ *  138  bgCntText[2]   u16  BG0CNT/BG1CNT (text map geometry:
+ *                           screen base, char base, size, colour
+ *                           depth — Phase 3, 5.10). 0 is a legitimate
+ *                           register value (charBase 0, screenBase 0,
+ *                           32x32, 4bpp), NOT an "unknown" marker —
+ *                           unlike bgCnt above, an old dump's 0 here
+ *                           is indistinguishable from a real 0; the
+ *                           motion-field diff treats 0->0 as
+ *                           unchanged, which is correct-or-conservative
+ *                           in every case (see the 5.10 plan §1.2).
+ *  142  reserved[2]    u8   zero
  *  Total: 144 bytes.
  */
 
@@ -165,7 +176,9 @@ struct AtomicScanlineMeta {
 	uint8_t objwinMask[30];
 	uint16_t bgCnt[2];
 	uint8_t mosaicEnable;
-	uint8_t reserved[7];
+	uint8_t reserved0b;
+	uint16_t bgCntText[2];
+	uint8_t reserved[2];
 };
 
 CXX_GUARD_START

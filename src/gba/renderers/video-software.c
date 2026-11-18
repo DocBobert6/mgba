@@ -1379,6 +1379,17 @@ static void GBAVideoSoftwareRendererAtomicSnapshotScanline(struct GBAVideoSoftwa
 	   write marks the scanlines whose cached register changed). */
 	meta->bgCnt[0] = renderer->cache[y].io[GBA_REG_BG2CNT >> 1];
 	meta->bgCnt[1] = renderer->cache[y].io[GBA_REG_BG3CNT >> 1];
+	/* Atomic per-scanline motion field (Phase 3, 5.10): the text
+	   map geometry (BG0CNT/BG1CNT) for this scanline, from the same
+	   cached I/O as bgCnt/mosaicEnable above. bgCntText[0] is
+	   BG0CNT, bgCntText[1] is BG1CNT. 0 is a legitimate value
+	   (charBase 0, screenBase 0, 32x32, 4bpp), not an "unknown"
+	   marker — see atomic-layers.h. A non-dirty scanline keeps the
+	   previous frame's bgCntText, exactly like its bgCnt/palette
+	   row (a BGCNT write marks the scanlines whose cached register
+	   changed). */
+	meta->bgCntText[0] = renderer->cache[y].io[GBA_REG_BG0CNT >> 1];
+	meta->bgCntText[1] = renderer->cache[y].io[GBA_REG_BG1CNT >> 1];
 	if (renderer->atomicPaletteHistory) {
 		memcpy(&renderer->atomicPaletteHistory[(size_t) y * 512],
 		       renderer->normalPalette, 512 * sizeof(mColor));
