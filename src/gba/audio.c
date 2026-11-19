@@ -43,6 +43,8 @@ void GBAAudioInit(struct GBAAudio* audio, size_t samples) {
 	audio->forceDisableChA = false;
 	audio->forceDisableChB = false;
 	audio->masterVolume = GBA_AUDIO_VOLUME_MAX;
+	audio->mp2kSample = NULL;
+	audio->mp2kContext = NULL;
 	audio->sampleInterval = GBA_ARM7TDMI_FREQUENCY / 0x8000;
 }
 
@@ -365,6 +367,71 @@ void GBAAudioSample(struct GBAAudio* audio, int32_t timestamp) {
 		sampleLeft >>= psgShift;
 		sampleRight >>= psgShift;
 
+		/* Atomic MP2K HLE splice: one stereo pair per output sample.
+		   The callback consumes two HLE samples per call (the HLE
+		   renders at 65,536 Hz, this core at 32,768 Hz) and returns
+		   false whenever the HLE is not engaged or not enabled, in
+		   which case the stock FIFO path below runs unchanged.
+		   Mapping (NBA's assumption, flagged unproven in the proof):
+		   the HLE pair is [R, L] — destination[j*2+0] uses volume_r,
+		   [1] uses volume_l — so R is the FIFO A stream and L is the
+		   FIFO B stream, routed through the existing chA/chB
+		   left/right flags and volume bits. Scaling mirrors the
+		   stock formula exactly: stock contributes (s8 << 2) >>
+		   !volume for an s8 FIFO value, and the HLE float f
+		   corresponds to s8 = f * 127, so the HLE contribution is
+		   (s8 << 2) >> !volume after the ATOMIC_MP2K_GAIN_TRIM.
+		   The s8 value is clamped to the FIFO's range first, so the
+		   HLE can never push the sum past what the stock path could
+		   produce per stream. PSG above is untouched in both paths,
+		   and the summed sample still goes through _applyBias. */
+		float mp2kRight = 0.0f;
+		float mp2kLeft = 0.0f;
+		bool mp2kActive = audio->mp2kSample && audio->mp2kSample(audio->mp2kContext, &mp2kRight, &mp2kLeft);
+		if (mp2kActive) {
+			int32_t mp2kS8A = (int32_t) (mp2kRight * ATOMIC_MP2K_GAIN_TRIM * 127.0f);
+			int32_t mp2kS8B = (int32_t) (mp2kLeft * ATOMIC_MP2K_GAIN_TRIM * 127.0f);
+			int32_t mp2kA;
+			int32_t mp2kB;
+			if (mp2kS8A > 127) {
+				mp2kS8A = 127;
+			} else if (mp2kS8A < -128) {
+				mp2kS8A = -128;
+			}
+			if (mp2kS8B > 127) {
+				mp2kS8B = 127;
+			} else if (mp2kS8B < -128) {
+				mp2kS8B = -128;
+			}
+			/* volumeChA/volumeChB are SOUNDCNT_HI bits 2/3: 0 = 50%,
+			   1 = 100%. The stock formula (v << 2) >> !volume gives
+			   v*2 at 50% and v*4 at 100%; the HLE uses the same. */
+			mp2kA = (mp2kS8A << 2) >> !audio->volumeChA;
+			mp2kB = (mp2kS8B << 2) >> !audio->volumeChB;
+
+			if (!audio->forceDisableChA) {
+				if (audio->chALeft) {
+					sampleLeft += mp2kA;
+				}
+
+				if (audio->chARight) {
+					sampleRight += mp2kA;
+				}
+			}
+
+			if (!audio->forceDisableChB) {
+				if (audio->chBLeft) {
+					sampleLeft += mp2kB;
+				}
+
+				if (audio->chBRight) {
+					sampleRight += mp2kB;
+				}
+			}
+		} else {
+		/* Stock DMA FIFO path, byte-identical to before the HLE
+		   splice: the HLE is either not installed, not enabled, or
+		   not yet engaged. */
 		if (!audio->forceDisableChA) {
 			if (audio->chALeft) {
 				sampleLeft += (audio->chA.samples[sample] << 2) >> !audio->volumeChA;
@@ -384,6 +451,7 @@ void GBAAudioSample(struct GBAAudio* audio, int32_t timestamp) {
 				sampleRight += (audio->chB.samples[sample] << 2) >> !audio->volumeChB;
 			}
 		}
+	}
 
 		sampleLeft = _applyBias(audio, sampleLeft);
 		sampleRight = _applyBias(audio, sampleRight);

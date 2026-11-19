@@ -1953,6 +1953,10 @@ void retro_reset(void) {
 	core->reset(core);
 	mRumbleIntegratorReset(&rumble);
 	_setupMaps(core);
+	/* Atomic MP2K HLE: same game, so the hook and the enabled flag
+	   are kept — only the HLE state is reset (see
+	   libretroMp2kResetState). */
+	libretroMp2kResetState();
 }
 
 #ifdef GEKKO
@@ -2136,10 +2140,20 @@ bool retro_load_game(const struct retro_game_info* game) {
 	}
 #endif
 
+	/* Atomic MP2K HLE: a new game starts with the HLE off, the
+	   hook disarmed and the state reset. The bridge calls
+	   atomic_mp2k_set_hook() / atomic_mp2k_set_enabled() after
+	   this returns, before the first retro_run (see
+	   libretro-atomic.h). */
+	libretroMp2kOnGameLoaded();
+
 	return true;
 }
 
 void retro_unload_game(void) {
+	/* Atomic MP2K HLE: mark the core gone before it is freed (see
+	   libretroMp2kOnGameUnloaded). */
+	libretroMp2kOnGameUnloaded();
 	if (!core) {
 		return;
 	}
@@ -2187,6 +2201,13 @@ bool retro_unserialize(const void* data, size_t size) {
 	struct VFile* vfm = VFileFromConstMemory(data, size);
 	bool success = mCoreLoadStateNamed(core, vfm, SAVESTATE_RTC);
 	vfm->close(vfm);
+	if (success) {
+		/* Atomic MP2K HLE: the HLE state is not serialized (NBA's
+		   design) — reset it and rebuild from ROM on the next
+		   SoundMainRAM call. A brief audio glitch on load is
+		   expected. */
+		libretroMp2kResetState();
+	}
 	return success;
 }
 

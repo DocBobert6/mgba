@@ -19,6 +19,13 @@ CXX_GUARD_START
 #define GBA_AUDIO_FIFO_SIZE 8
 #define GBA_MAX_SAMPLES 16
 
+/* Atomic MP2K HLE gain trim (fork addition): the HLE runs ~0.6 dB
+   louder than the stock FIFO path (MP2K-PROOF.md), so the HLE
+   contribution is scaled by 10^(-0.6/20) = 0.9333 in the splice
+   below. A single named constant so the host A/B check can retune
+   it with a one-line change. */
+#define ATOMIC_MP2K_GAIN_TRIM 0.9333f
+
 #define MP2K_MAGIC 0x68736D53
 #define MP2K_MAX_SOUND_CHANNELS 12
 
@@ -86,6 +93,20 @@ struct GBAAudio {
 	bool forceDisableChA;
 	bool forceDisableChB;
 	int masterVolume;
+
+	/* Atomic MP2K HLE splice (fork addition): when non-NULL, the
+	   audio core asks this callback for one stereo HLE pair per
+	   output sample and, when it returns true, the HLE pair replaces
+	   the DMA FIFO (chA/chB) contributions for that sample — PSG is
+	   untouched in both paths. The callback consumes exactly two
+	   HLE samples per call (the HLE renders at 65,536 Hz, this core
+	   at 32,768 Hz) and returns false whenever the HLE is not
+	   engaged or not enabled, in which case the stock FIFO path runs
+	   byte-identically. The pointer is installed by the atomic
+	   module on game load; GBAAudioReset leaves it alone, so it
+	   survives a core reset. */
+	bool (*mp2kSample)(void* context, float* outRight, float* outLeft);
+	void* mp2kContext;
 
 	struct mTimingEvent sampleEvent;
 };

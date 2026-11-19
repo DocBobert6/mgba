@@ -189,6 +189,26 @@ struct ARMCore {
 	struct ARMInterruptHandler irqh;
 	struct ARMCoprocessor cp[16];
 
+	/* Atomic MP2K HLE hook (fork addition): when mp2kHookAddress is
+	   not 0xFFFFFFFF, the step functions invoke mp2kHookCallback
+	   before executing the instruction whose r15 equals
+	   mp2kHookAddress. The check sits after the PC increment in
+	   ARMStep/ThumbStep, where gprs[ARM_PC] is the address of the
+	   instruction being executed + 8 (ARM) / + 4 (Thumb) — exactly
+	   NanoBoyAdvance's r15 convention, so the hook value is the
+	   SoundMainRAM entry + 8 (ARM) / + 4 (Thumb), as returned by
+	   NBA's SearchSoundMainRAM. The callback is only invoked on a
+	   match, so when the hook is disabled the cost is one integer
+	   compare per instruction. Invariant: mp2kHookCallback is
+	   non-NULL whenever mp2kHookAddress != 0xFFFFFFFF (enforced by
+	   the setter in libretro-mp2k.c: callback first, address last
+	   when arming; address first, callback last when disarming).
+	   Initialised by ARMInit; ARMReset leaves these fields alone,
+	   so the hook survives a core reset. */
+	uint32_t mp2kHookAddress;
+	void (*mp2kHookCallback)(struct ARMCore* cpu, void* context);
+	void* mp2kHookContext;
+
 	struct mCPUComponent* master;
 
 	size_t numComponents;

@@ -194,6 +194,56 @@ size_t atomic_affine_vram_size(void);
 size_t atomic_affine_palette_history_size(void);
 size_t atomic_affine_versions_size(void);
 
+/* MP2K HLE (alpha.55): a per-game rebuild of Nintendo's software
+   music mixer (NanoBoyAdvance's MP2K HLE, ported to C in
+   libretro-mp2k.c), replacing the DMA FIFO audio with a float mix
+   at 65,536 Hz when engaged and enabled. No libretro core options
+   are added for it (the pin audit requires exactly 17 mgba_*
+   options); everything goes through this API.
+ *
+ * Contract for the bridge (the app side is built against exactly
+ * these names):
+ *  - After every retro_load_game, call atomic_mp2k_set_hook() with
+ *    the SoundMainRAM hook address for the loaded game (the
+ *    NanoBoyAdvance r15 value: the SoundMainRAM entry + 4 for
+ *    Thumb code, + 8 for ARM code, as returned by NBA's
+ *    SearchSoundMainRAM), or 0xFFFFFFFF for a game with no MP2K
+ *    engine, and atomic_mp2k_set_enabled() with the game's saved
+ *    switch (default OFF). The fork clears both on load, so a game
+ *    whose hook is never set simply never engages; the calls must
+ *    happen after retro_load_game returns and before the first
+ *    retro_run. The CPU executes no instructions between load and
+ *    those calls, so no stale hook can fire.
+ *  - atomic_mp2k_reset() resets the HLE state (call on game load
+ *    and on state load; libretro.c already does this internally on
+ *    retro_load_game, retro_reset and retro_unserialize, so the
+ *    bridge only needs it if it drives state loads itself).
+ *  - atomic_mp2k_is_engaged() is a diagnostic: 1 once the first
+ *    SoundMainRAM call has engaged the HLE (proves the hook fires).
+ *  - The HLE output is trimmed by ATOMIC_MP2K_GAIN_TRIM (defined
+ *    in <mgba/internal/gba/audio.h> at the splice, 0.9333f =
+ *    10^(-0.6/20)) so "HLE on" is not also "louder".
+ *  - force_reverb is not implemented: the game's own reverb value
+ *    is used, never forced. Cubic interpolation is always on.
+ *  - The HLE pair is [R, L]; R is routed as the FIFO A stream and
+ *    L as the FIFO B stream (NBA's assumption, flagged unproven in
+ *    the proof — the host check tests the channel order). */
+int atomic_mp2k_available(void);
+void atomic_mp2k_set_hook(uint32_t address);
+void atomic_mp2k_set_enabled(int enabled);
+void atomic_mp2k_reset(void);
+int atomic_mp2k_is_engaged(void);
+
+/* Internal to the .so (not part of the bridge API, not exported —
+   the names match neither retro_* nor atomic_*, so the version
+   script keeps them local): libretro.c calls these on game load
+   (full clear + re-arm), on game unload (mark the core gone), and
+   on core reset / successful state load (HLE state reset only,
+   hook and enabled flag kept). */
+void libretroMp2kOnGameLoaded(void);
+void libretroMp2kOnGameUnloaded(void);
+void libretroMp2kResetState(void);
+
 #ifdef __cplusplus
 }
 #endif

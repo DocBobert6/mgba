@@ -46,6 +46,11 @@ void ARMSetPrivilegeMode(struct ARMCore* cpu, enum PrivilegeMode mode) {
 
 void ARMInit(struct ARMCore* cpu) {
 	memset(cpu->cp, 0, sizeof(cpu->cp));
+	/* Atomic MP2K HLE hook: disabled until the atomic module arms it
+	   (see the field comment in arm.h). */
+	cpu->mp2kHookAddress = 0xFFFFFFFF;
+	cpu->mp2kHookCallback = NULL;
+	cpu->mp2kHookContext = NULL;
 	cpu->master->init(cpu, cpu->master);
 	size_t i;
 	for (i = 0; i < cpu->numComponents; ++i) {
@@ -204,6 +209,14 @@ static inline void ARMStep(struct ARMCore* cpu) {
 	cpu->gprs[ARM_PC] += WORD_SIZE_ARM;
 	LOAD_32(cpu->prefetch[1], cpu->gprs[ARM_PC] & cpu->memory.activeMask, cpu->memory.activeRegion);
 
+	/* Atomic MP2K HLE hook: gprs[ARM_PC] is now the address of the
+	   instruction about to execute + 8 — NanoBoyAdvance's r15. The
+	   instruction itself has not run yet, so the HLE sees the same
+	   machine state NBA's pre-instruction check sees. */
+	if ((uint32_t) cpu->gprs[ARM_PC] == cpu->mp2kHookAddress) {
+		cpu->mp2kHookCallback(cpu, cpu->mp2kHookContext);
+	}
+
 	unsigned condition = opcode >> 28;
 	if (condition != 0xE) {
 		unsigned flags = cpu->cpsr.flags >> 4;
@@ -222,6 +235,12 @@ static inline void ThumbStep(struct ARMCore* cpu) {
 	cpu->prefetch[0] = cpu->prefetch[1];
 	cpu->gprs[ARM_PC] += WORD_SIZE_THUMB;
 	LOAD_16(cpu->prefetch[1], cpu->gprs[ARM_PC] & cpu->memory.activeMask, cpu->memory.activeRegion);
+	/* Atomic MP2K HLE hook: gprs[ARM_PC] is now the address of the
+	   instruction about to execute + 4 — NanoBoyAdvance's r15. See
+	   ARMStep above. */
+	if ((uint32_t) cpu->gprs[ARM_PC] == cpu->mp2kHookAddress) {
+		cpu->mp2kHookCallback(cpu, cpu->mp2kHookContext);
+	}
 	ThumbInstruction instruction = _thumbTable[opcode >> 6];
 	instruction(cpu, opcode);
 }
