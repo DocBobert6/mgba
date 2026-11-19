@@ -368,10 +368,12 @@ void GBAAudioSample(struct GBAAudio* audio, int32_t timestamp) {
 		sampleRight >>= psgShift;
 
 		/* Atomic MP2K HLE splice: one stereo pair per output sample.
-		   The callback consumes two HLE samples per call (the HLE
-		   renders at 65,536 Hz, this core at 32,768 Hz) and returns
-		   false whenever the HLE is not engaged or not enabled, in
-		   which case the stock FIFO path below runs unchanged.
+		   The callback consumes render samples at the HLE's own
+		   65,536 Hz (one per 256 CPU cycles, following the core's
+		   SOUNDBIAS sampleInterval: 2 per call at res 0, 1 per call
+		   at res 1) and returns false whenever the HLE is not
+		   engaged or not enabled, in which case the stock FIFO path
+		   below runs unchanged.
 		   Mapping (NBA's assumption, flagged unproven in the proof):
 		   the HLE pair is [R, L] — destination[j*2+0] uses volume_r,
 		   [1] uses volume_l — so R is the FIFO A stream and L is the

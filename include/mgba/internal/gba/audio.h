@@ -24,7 +24,7 @@ CXX_GUARD_START
    contribution is scaled by 10^(-0.6/20) = 0.9333 in the splice
    below. A single named constant so the host A/B check can retune
    it with a one-line change. */
-#define ATOMIC_MP2K_GAIN_TRIM 0.9333f
+#define ATOMIC_MP2K_GAIN_TRIM 0.8968f
 
 #define MP2K_MAGIC 0x68736D53
 #define MP2K_MAX_SOUND_CHANNELS 12

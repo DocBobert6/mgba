@@ -171,6 +171,12 @@ static struct Mp2kEnvelope mp2kEnvelopes[MP2K_MAX_SOUND_CHANNELS];
 static float mp2kBuffer[MP2K_SAMPLES_PER_FRAME * MP2K_TOTAL_FRAME_COUNT * 2];
 static int mp2kCurrentFrame = 0;
 static int mp2kBufferReadIndex = 0;
+/* Consumption accumulator for _mp2kSamplePair (see there): render
+   samples owed, plus the last pair handed out (held on calls where
+   no new render sample is due). */
+static float mp2kConsumeDue = 0.0f;
+static float mp2kLastRight = 0.0f;
+static float mp2kLastLeft = 0.0f;
 /* The running game's GBA (NBA's MP2K holds a Bus& for the same
    purpose): set by the hook callback before SoundMainRAM runs, and
    by the apply helper on game load, so the mixer can resolve wave
@@ -245,6 +251,9 @@ static void _mp2kResetState(void) {
 	mp2kEngaged = false;
 	mp2kCurrentFrame = 0;
 	mp2kBufferReadIndex = 0;
+	mp2kConsumeDue = 0.0f;
+	mp2kLastRight = 0.0f;
+	mp2kLastLeft = 0.0f;
 	for (i = 0; i < MP2K_MAX_SOUND_CHANNELS; ++i) {
 		memset(&mp2kSamplers[i], 0, sizeof(mp2kSamplers[i]));
 		memset(&mp2kEnvelopes[i], 0, sizeof(mp2kEnvelopes[i]));
@@ -641,24 +650,52 @@ static float* _mp2kReadSample(void) {
 	return sample;
 }
 
-/* The audio splice's per-sample getter (GBAAudio.mp2kSample): one
-   stereo pair per mGBA output sample. mGBA produces output at
-   32,768 Hz (sampleInterval = GBA_ARM7TDMI_FREQUENCY / 0x8000) and
-   the HLE renders at 65,536 Hz, so two HLE samples are consumed per
-   call and the second is used — the proven ReadSample semantics
-   (lazy RenderFrame on buffer wrap) are preserved exactly. Returns
-   false (and consumes nothing) when the HLE is not enabled or not
-   yet engaged, so the stock FIFO path runs. */
+/* Render samples are consumed at the HLE's own 65,536 Hz — one
+   per 256 CPU cycles, exactly NanoBoyAdvance's engaged mixer step
+   (APU::StepMixer reschedules itself every 256 cycles and calls
+   ReadSample once) — however fast the core's audio output runs.
+   The core's output rate follows the game's SOUNDBIAS resolution:
+   sampleInterval is 0x200 >> resolution, i.e. 512 cycles at res 0
+   (32,768 Hz), 256 at res 1 (65,536 Hz), 128 at res 2, 64 at
+   res 3. So this getter consumes sampleInterval/256 render
+   samples per output sample: 2 at res 0, 1 at res 1, one every
+   other call at res 2 (holding the last pair in between), one
+   every fourth call at res 3. The previous code consumed two
+   render samples per call unconditionally, which is correct only
+   at res 0. Guranbo sets res 1 (sampleInterval 256, measured
+   live), so the old code consumed the render at 131,072
+   samples/s: RenderFrame fired 120x/s instead of 60x/s and the
+   music played at twice the pitch — the 4,736 Hz note landed at
+   9,472 Hz and the 8-16 kHz floor rose above stock. The lazy
+   RenderFrame-on-wrap semantics are preserved exactly; only the
+   consumption rate is fixed. Returns false (and consumes
+   nothing) when the HLE is not enabled or not yet engaged, so
+   the stock FIFO path runs. */
 static bool _mp2kSamplePair(void* context, float* outRight, float* outLeft) {
-	const float* pair;
+	const float* pair = NULL;
+	int sampleInterval;
 	(void) context;
 	if (!mp2kEnabled || !mp2kEngaged) {
 		return false;
 	}
-	(void) _mp2kReadSample();
-	pair = _mp2kReadSample();
-	*outRight = pair[0];
-	*outLeft = pair[1];
+	/* The core's audio sample interval in CPU cycles. Falls back
+	   to the reset default (512, res 0) if the core pointer is
+	   not available yet; the hook callback sets it on engage. */
+	sampleInterval = mp2kGba ? mp2kGba->audio.sampleInterval : 512;
+	if (sampleInterval <= 0) {
+		sampleInterval = 512;
+	}
+	mp2kConsumeDue += (float) sampleInterval / 256.0f;
+	while (mp2kConsumeDue >= 1.0f) {
+		pair = _mp2kReadSample();
+		mp2kConsumeDue -= 1.0f;
+	}
+	if (pair) {
+		mp2kLastRight = pair[0];
+		mp2kLastLeft = pair[1];
+	}
+	*outRight = mp2kLastRight;
+	*outLeft = mp2kLastLeft;
 	return true;
 }
 
